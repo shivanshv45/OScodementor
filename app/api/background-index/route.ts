@@ -53,14 +53,33 @@ export async function POST(request: Request) {
       })
     }
 
-    // Start the indexing process
-    // Note: This is awaited to ensure it completes, but Vercel has a 300s timeout configured
-    await indexRepositoryAsync(repoId, repoUrl)
+    // Start the indexing process asynchronously
+    // Don't await - return immediately so the fetch call doesn't timeout
+    // The indexing will continue in the background and update status via the database
+    // Note: repoId and repoUrl are guaranteed to be strings here due to the check above
+    const indexingRepoId = repoId
+    const indexingRepoUrl = repoUrl
+    indexRepositoryAsync(indexingRepoId, indexingRepoUrl).catch(async (error: any) => {
+      // Catch any unhandled errors in the async indexing process
+      console.error(`❌ Unhandled error in background indexing for ${indexingRepoId}:`, error)
+      try {
+        await updateRepositoryStatus(
+          indexingRepoId,
+          'failed',
+          0,
+          'Indexing failed',
+          error.message || 'Unknown error occurred during indexing'
+        )
+      } catch (updateError: any) {
+        console.error('❌ Failed to update status after unhandled error:', updateError)
+      }
+    })
     
+    // Return immediately - indexing is running in background
     return Response.json({
       success: true,
-      message: 'Indexing completed',
-      status: 'completed'
+      message: 'Indexing started',
+      status: 'indexing'
     })
 
   } catch (error: any) {

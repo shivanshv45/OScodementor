@@ -81,8 +81,10 @@ export async function POST(request: Request) {
     
     // Trigger background indexing via separate API call
     // This ensures the indexing runs in a separate function context
+    // Note: We use a longer timeout (60s) just to catch if the endpoint is completely broken
+    // The actual indexing will continue in the background and can take up to 300s
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout (just to catch broken endpoints)
     
     fetch(backgroundIndexUrl, {
       method: 'POST',
@@ -116,27 +118,39 @@ export async function POST(request: Request) {
       }
     }).catch(error => {
       clearTimeout(timeoutId)
+      // Only report as error if it's not a timeout (timeout means endpoint is broken, not indexing)
       const isTimeout = error.name === 'AbortError' || error.message.includes('aborted')
-      const errorMessage = isTimeout 
-        ? 'Request timeout: Background indexing endpoint did not respond within 10 seconds'
-        : `Network error: ${error.message}`
       
-      console.error(`❌ Error triggering background indexing for ${repository.id}:`, {
-        message: error.message,
-        name: error.name,
-        stack: error.stack,
-        url: backgroundIndexUrl,
-        isTimeout
-      })
-      updateRepositoryStatus(
-        repository.id, 
-        'failed', 
-        0, 
-        'Failed to start indexing', 
-        errorMessage
-      ).catch(updateError => {
-        console.error('❌ Failed to update status to failed:', updateError)
-      })
+      if (isTimeout) {
+        // If endpoint doesn't respond in 60s, it's likely broken
+        console.error(`❌ Background indexing endpoint did not respond within 60 seconds for ${repository.id}`)
+        updateRepositoryStatus(
+          repository.id, 
+          'failed', 
+          0, 
+          'Failed to start indexing', 
+          'Background indexing endpoint did not respond. Please check server logs.'
+        ).catch(updateError => {
+          console.error('❌ Failed to update status to failed:', updateError)
+        })
+      } else {
+        // Network errors should be reported
+        console.error(`❌ Network error triggering background indexing for ${repository.id}:`, {
+          message: error.message,
+          name: error.name,
+          stack: error.stack,
+          url: backgroundIndexUrl
+        })
+        updateRepositoryStatus(
+          repository.id, 
+          'failed', 
+          0, 
+          'Failed to start indexing', 
+          `Network error: ${error.message}`
+        ).catch(updateError => {
+          console.error('❌ Failed to update status to failed:', updateError)
+        })
+      }
     })
 
     return Response.json({
