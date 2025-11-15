@@ -13,11 +13,19 @@ import { searchFilesInRepository } from '@/lib/elasticsearch'
 
 export async function POST(request: Request) {
   console.log('🔄 Background indexing worker started')
+  console.log('🔍 Request received at:', new Date().toISOString())
+  
+  let repoId: string | null = null
   
   try {
-    const { repoId, repoUrl } = await request.json()
+    const body = await request.json()
+    repoId = body.repoId
+    const repoUrl = body.repoUrl
+    
+    console.log('🔍 Request body:', { repoId, repoUrl: repoUrl ? '***SET***' : 'MISSING' })
     
     if (!repoId || !repoUrl) {
+      console.error('❌ Missing required parameters:', { repoId: !!repoId, repoUrl: !!repoUrl })
       return Response.json(
         { error: 'Repository ID and URL are required' },
         { status: 400 }
@@ -27,6 +35,7 @@ export async function POST(request: Request) {
     // Check if indexing is already in progress
     const currentProgress = await getIndexingProgress(repoId)
     if (currentProgress && currentProgress.status === 'completed') {
+      console.log(`✅ Repository ${repoId} already indexed`)
       return Response.json({
         success: true,
         message: 'Repository already indexed',
@@ -35,6 +44,7 @@ export async function POST(request: Request) {
     }
 
     if (currentProgress && currentProgress.status === 'indexing' && currentProgress.progress > 5) {
+      console.log(`⏳ Repository ${repoId} indexing already in progress at ${currentProgress.progress}%`)
       return Response.json({
         success: true,
         message: 'Indexing already in progress',
@@ -44,6 +54,7 @@ export async function POST(request: Request) {
     }
 
     // Start the indexing process
+    // Note: This is awaited to ensure it completes, but Vercel has a 300s timeout configured
     await indexRepositoryAsync(repoId, repoUrl)
     
     return Response.json({
@@ -54,6 +65,28 @@ export async function POST(request: Request) {
 
   } catch (error: any) {
     console.error('❌ Background indexing error:', error)
+    console.error('❌ Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      repoId
+    })
+    
+    // Try to update status if we have a repoId
+    if (repoId && typeof repoId === 'string') {
+      try {
+        await updateRepositoryStatus(
+          repoId,
+          'failed',
+          0,
+          'Indexing failed',
+          error.message || 'Unknown error occurred'
+        )
+      } catch (updateError: any) {
+        console.error('❌ Failed to update status to failed:', updateError)
+      }
+    }
+    
     return Response.json(
       { error: 'Background indexing failed', details: error.message },
       { status: 500 }
@@ -68,11 +101,29 @@ async function indexRepositoryAsync(repoId: string, repoUrl: string) {
   console.log(`🔍 Environment check:`, {
     hasDatabaseUrl: !!process.env.DATABASE_URL,
     hasElasticsearchUrl: !!process.env.ELASTICSEARCH_URL,
+    hasElasticsearchUsername: !!process.env.ELASTICSEARCH_USERNAME,
+    hasElasticsearchPassword: !!process.env.ELASTICSEARCH_PASSWORD,
     hasGithubToken: !!process.env.GITHUB_TOKEN,
-    hasGeminiApiKey: !!process.env.GEMINI_API_KEY
+    hasGeminiApiKey: !!process.env.GEMINI_API_KEY,
+    elasticsearchUrl: process.env.ELASTICSEARCH_URL ? '***SET***' : 'MISSING'
   })
   
   try {
+    // Step 0: Initialize Elasticsearch connection first
+    console.log(`📊 Step 0: Initializing Elasticsearch connection...`)
+    try {
+      await initializeElasticsearch()
+      console.log(`✅ Elasticsearch initialized successfully`)
+    } catch (esInitError: any) {
+      console.error(`❌ Failed to initialize Elasticsearch:`, esInitError.message)
+      console.error(`❌ Elasticsearch error details:`, {
+        message: esInitError.message,
+        stack: esInitError.stack,
+        name: esInitError.name
+      })
+      throw new Error(`Elasticsearch initialization failed: ${esInitError.message}`)
+    }
+    
     // Step 1: Update status to indexing
     console.log(`📊 Step 1: Updating status to indexing (5%)`)
     console.log(`🔍 About to call updateRepositoryStatus with:`, { repoId, status: 'indexing', progress: 5 })
@@ -372,7 +423,7 @@ async function indexFilesRecursively(
           content = `// File: ${file.path}\n// Content unavailable`
         }
         
-        await indexCallback(file.path, content, 'file', language)
+        await indexCallback(file.path, content, 'file', language || 'unknown')
       } catch (error) {
         console.error(`Error processing file ${file.path}:`, error)
       }

@@ -74,27 +74,67 @@ export async function POST(request: Request) {
     console.log(`🚀 Starting background indexing for repo: ${repository.id}`)
     console.log(`🔍 Repository details:`, { repoId: repository.id, repoUrl })
     
+    // Get the base URL for the fetch call
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+    const backgroundIndexUrl = `${baseUrl}/api/background-index`
+    console.log(`🔍 Background index URL: ${backgroundIndexUrl}`)
+    
     // Trigger background indexing via separate API call
     // This ensures the indexing runs in a separate function context
-    fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/background-index`, {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 10000) // 10 second timeout
+    
+    fetch(backgroundIndexUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
         repoId: repository.id, 
         repoUrl 
-      })
-    }).then(response => {
+      }),
+      signal: controller.signal
+    }).then(async response => {
+      clearTimeout(timeoutId)
       if (response.ok) {
-        console.log(`✅ Background indexing triggered for ${repository.id}`)
+        const result = await response.json().catch(() => ({}))
+        console.log(`✅ Background indexing triggered for ${repository.id}:`, result)
       } else {
-        console.error(`❌ Failed to trigger background indexing for ${repository.id}`)
-        updateRepositoryStatus(repository.id, 'failed', 0, 'Failed to start indexing', 'Background indexing trigger failed').catch(updateError => {
+        const errorText = await response.text().catch(() => 'Unknown error')
+        console.error(`❌ Failed to trigger background indexing for ${repository.id}:`, {
+          status: response.status,
+          statusText: response.statusText,
+          error: errorText
+        })
+        await updateRepositoryStatus(
+          repository.id, 
+          'failed', 
+          0, 
+          'Failed to start indexing', 
+          `Background indexing trigger failed: ${response.status} ${response.statusText}`
+        ).catch(updateError => {
           console.error('❌ Failed to update status to failed:', updateError)
         })
       }
     }).catch(error => {
-      console.error(`❌ Error triggering background indexing for ${repository.id}:`, error)
-      updateRepositoryStatus(repository.id, 'failed', 0, 'Failed to start indexing', error.message).catch(updateError => {
+      clearTimeout(timeoutId)
+      const isTimeout = error.name === 'AbortError' || error.message.includes('aborted')
+      const errorMessage = isTimeout 
+        ? 'Request timeout: Background indexing endpoint did not respond within 10 seconds'
+        : `Network error: ${error.message}`
+      
+      console.error(`❌ Error triggering background indexing for ${repository.id}:`, {
+        message: error.message,
+        name: error.name,
+        stack: error.stack,
+        url: backgroundIndexUrl,
+        isTimeout
+      })
+      updateRepositoryStatus(
+        repository.id, 
+        'failed', 
+        0, 
+        'Failed to start indexing', 
+        errorMessage
+      ).catch(updateError => {
         console.error('❌ Failed to update status to failed:', updateError)
       })
     })
