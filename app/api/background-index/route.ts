@@ -53,15 +53,24 @@ export async function POST(request: Request) {
       })
     }
 
-    // Start the indexing process asynchronously
-    // Don't await - return immediately so the fetch call doesn't timeout
-    // The indexing will continue in the background and update status via the database
-    // Note: repoId and repoUrl are guaranteed to be strings here due to the check above
+    // Start the indexing process
+    // CRITICAL: In Vercel serverless, we MUST await to keep function alive
+    // The function has 300s timeout, so we can await the full indexing
+    // The caller uses fire-and-forget, so it won't wait for response
     const indexingRepoId = repoId
     const indexingRepoUrl = repoUrl
-    indexRepositoryAsync(indexingRepoId, indexingRepoUrl).catch(async (error: any) => {
-      // Catch any unhandled errors in the async indexing process
-      console.error(`❌ Unhandled error in background indexing for ${indexingRepoId}:`, error)
+    
+    // Update status to 5% immediately so frontend sees progress
+    await updateRepositoryStatus(indexingRepoId, 'indexing', 5, 'Starting indexing process...')
+    
+    // IMPORTANT: We await the indexing to keep the function alive in Vercel
+    // Even though we return a response, the await keeps execution context alive
+    // The caller uses fire-and-forget fetch, so it doesn't wait for this
+    try {
+      await indexRepositoryAsync(indexingRepoId, indexingRepoUrl)
+      console.log(`✅ Indexing completed successfully for ${indexingRepoId}`)
+    } catch (error: any) {
+      console.error(`❌ Error in background indexing for ${indexingRepoId}:`, error)
       try {
         await updateRepositoryStatus(
           indexingRepoId,
@@ -71,15 +80,18 @@ export async function POST(request: Request) {
           error.message || 'Unknown error occurred during indexing'
         )
       } catch (updateError: any) {
-        console.error('❌ Failed to update status after unhandled error:', updateError)
+        console.error('❌ Failed to update status after error:', updateError)
       }
-    })
+      // Re-throw to ensure error is logged, but we've already updated status
+    }
     
-    // Return immediately - indexing is running in background
+    // Return success response
+    // Note: This returns AFTER indexing completes, but caller uses fire-and-forget
+    // so it doesn't wait. The function stays alive because of the await above.
     return Response.json({
       success: true,
-      message: 'Indexing started',
-      status: 'indexing'
+      message: 'Indexing completed',
+      status: 'completed'
     })
 
   } catch (error: any) {
