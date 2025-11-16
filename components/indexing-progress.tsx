@@ -3,6 +3,17 @@
 import { useState, useEffect } from "react"
 import { Loader2, CheckCircle, AlertCircle, Database, Search, Zap } from "lucide-react"
 
+// Add shimmer animation keyframes
+const shimmerStyle = `
+  @keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+  }
+  .animate-shimmer {
+    animation: shimmer 2s infinite;
+  }
+`
+
 interface IndexingProgressProps {
   repoId: string
   onComplete?: () => void
@@ -72,7 +83,7 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
           setStatus(prev => ({
             ...prev,
             status: 'indexing',
-            currentStep: 'Starting indexing process...',
+            currentStep: 'Starting indexing process... please be patient might take 2-10 mins to complete... ',
             progress: 5
           }))
         }
@@ -136,7 +147,9 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
   }
 
   return (
-    <div className={`console-border border rounded-lg p-6 ${getStatusColor()} mb-6`}>
+    <>
+      <style>{shimmerStyle}</style>
+      <div className={`console-border border rounded-lg p-6 ${getStatusColor()} mb-6`}>
       <div className="flex items-center gap-3 mb-4">
         {getStatusIcon()}
         <div className="flex-1">
@@ -145,6 +158,9 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
           </h3>
           <p className="console-text text-sm text-muted-foreground">
             {status.currentStep}
+            {status.status === 'indexing' && status.progress <= 10 && (
+              <span className="inline-block ml-2 animate-pulse">⏳</span>
+            )}
           </p>
         </div>
       </div>
@@ -155,11 +171,20 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
           <span className="font-medium">{status.progress}%</span>
           <span className="font-medium">{status.indexedFiles}/{status.totalFiles} files</span>
         </div>
-        <div className="w-full bg-muted/20 rounded-full h-3">
+        <div className="w-full bg-muted/20 rounded-full h-3 relative overflow-hidden">
           <div 
-            className="bg-accent h-3 rounded-full transition-all duration-500 ease-out"
+            className="bg-accent h-3 rounded-full transition-all duration-500 ease-out relative"
             style={{ width: `${status.progress}%` }}
-          />
+          >
+            {/* Animated shimmer effect when stuck at low progress */}
+            {status.status === 'indexing' && status.progress <= 10 && (
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
+            )}
+          </div>
+          {/* Subtle pulse animation for the progress bar track when stuck */}
+          {status.status === 'indexing' && status.progress <= 10 && (
+            <div className="absolute inset-0 bg-accent/20 animate-pulse" />
+          )}
         </div>
       </div>
 
@@ -243,6 +268,16 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
         </div>
       )}
 
+      {/* Helpful message when stuck at low progress */}
+      {status.status === 'indexing' && status.progress <= 15 && (
+        <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded console-text text-xs text-blue-400">
+          <p className="flex items-center gap-2">
+            <Loader2 className="w-3 h-3 animate-spin" />
+            <span>Initial setup may take a moment on first run. This is normal and indexing will continue...</span>
+          </p>
+        </div>
+      )}
+
       {/* Progress Animation */}
       {status.status === 'indexing' && (
         <div className="mt-4 flex items-center justify-center">
@@ -254,5 +289,6 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
         </div>
       )}
     </div>
+    </>
   )
 }

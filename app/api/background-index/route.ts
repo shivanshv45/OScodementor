@@ -142,6 +142,14 @@ async function indexRepositoryAsync(repoId: string, repoUrl: string) {
   try {
     // Step 0: Initialize Elasticsearch connection first
     console.log(`📊 Step 0: Initializing Elasticsearch connection...`)
+    // Update progress to show we're initializing connections
+    try {
+      await updateRepositoryStatus(repoId, 'indexing', 7, 'Initializing search engine connection...')
+      console.log(`✅ Updated status: 7% - Initializing Elasticsearch`)
+    } catch (dbError: any) {
+      console.warn(`⚠️ Failed to update status (non-fatal):`, dbError.message)
+    }
+    
     try {
       await initializeElasticsearch()
       console.log(`✅ Elasticsearch initialized successfully`)
@@ -155,40 +163,68 @@ async function indexRepositoryAsync(repoId: string, repoUrl: string) {
       throw new Error(`Elasticsearch initialization failed: ${esInitError.message}`)
     }
     
-    // Step 1: Update status to indexing
-    console.log(`📊 Step 1: Updating status to indexing (5%)`)
-    console.log(`🔍 About to call updateRepositoryStatus with:`, { repoId, status: 'indexing', progress: 5 })
-    
+    // Step 1: Update status to show we're preparing to fetch
+    console.log(`📊 Step 1: Updating status to indexing (8%)`)
     try {
       await Promise.race([
-        updateRepositoryStatus(repoId, 'indexing', 5, 'Fetching repository data from GitHub...'),
+        updateRepositoryStatus(repoId, 'indexing', 8, 'Preparing to fetch repository data...'),
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Database update timeout after 15 seconds')), 15000)
         )
       ])
-      console.log(`✅ Updated status: 5% - Fetching from GitHub`)
+      console.log(`✅ Updated status: 8% - Preparing to fetch`)
     } catch (dbError: any) {
-      console.error(`❌ Database update failed:`, dbError.message)
-      throw new Error(`Database error: ${dbError.message}`)
+      console.warn(`⚠️ Database update failed (non-fatal):`, dbError.message)
     }
-    
-    // Add small delay for better UX
-    await new Promise(resolve => setTimeout(resolve, 1000))
 
     // Step 2: Fetch repository data from GitHub with timeout
     console.log(`🔍 Step 2: Fetching repository data from GitHub API...`)
     console.log(`📝 Repository URL: ${repoUrl}`)
     
+    // Update progress to show we're fetching from GitHub
+    try {
+      await updateRepositoryStatus(repoId, 'indexing', 10, 'Connecting to GitHub API...')
+      console.log(`✅ Updated status: 10% - Connecting to GitHub`)
+    } catch (dbError: any) {
+      console.warn(`⚠️ Failed to update status (non-fatal):`, dbError.message)
+    }
+    
     let repoData: any
     try {
+      // Update progress during fetch to show activity
+      const fetchPromise = fetchCompleteRepositoryData(repoUrl)
+      const progressPromise = new Promise(async (resolve) => {
+        // Update progress to 12% after 2 seconds to show we're actively fetching
+        await new Promise(r => setTimeout(r, 2000))
+        try {
+          await updateRepositoryStatus(repoId, 'indexing', 12, 'Fetching repository data from GitHub...')
+          console.log(`✅ Updated status: 12% - Fetching from GitHub`)
+        } catch (e) {
+          // Non-fatal
+        }
+        resolve(null)
+      })
+      
       repoData = await Promise.race([
-        fetchCompleteRepositoryData(repoUrl),
+        fetchPromise,
         new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('GitHub API timeout after 15 seconds')), 15000)
+          setTimeout(() => reject(new Error('GitHub API timeout after 30 seconds')), 30000)
         )
       ]) as any
+      
+      // Wait for progress update to complete if still running
+      await progressPromise.catch(() => {})
+      
       console.log(`✅ Fetched repository data: ${repoData.name}`)
       console.log(`📊 Repository stats: ${repoData.stars} stars, ${repoData.languages?.length || 0} languages`)
+      
+      // Update progress to show we've successfully fetched data
+      try {
+        await updateRepositoryStatus(repoId, 'indexing', 15, 'Repository data received, processing...')
+        console.log(`✅ Updated status: 15% - Data received`)
+      } catch (dbError: any) {
+        console.warn(`⚠️ Failed to update status (non-fatal):`, dbError.message)
+      }
     } catch (fetchError: any) {
       console.error(`❌ Failed to fetch repository data:`, fetchError.message)
       throw new Error(`GitHub API error: ${fetchError.message}`)
