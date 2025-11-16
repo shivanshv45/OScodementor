@@ -270,11 +270,19 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
 
       {/* Helpful message when stuck at low progress */}
       {status.status === 'indexing' && status.progress <= 15 && (
-        <div className="mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded console-text text-xs text-blue-400">
-          <p className="flex items-center gap-2">
-            <Loader2 className="w-3 h-3 animate-spin" />
-            <span>Initial setup may take a moment on first run. This is normal and indexing will continue...</span>
-          </p>
+        <div className="mt-3 space-y-2">
+          <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded console-text text-xs text-blue-400">
+            <p className="flex items-center gap-2">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              <span>Initial setup may take a moment on first run. This is normal and indexing will continue...</span>
+            </p>
+          </div>
+          <div className="p-3 bg-yellow-500/10 border border-yellow-500/30 rounded console-text text-xs text-yellow-400">
+            <p className="flex items-center gap-2">
+              <AlertCircle className="w-3 h-3" />
+              <span>Note: Indexing multiple repositories simultaneously may hit GitHub API rate limits, which can slow down the indexing process. Please be patient.</span>
+            </p>
+          </div>
         </div>
       )}
 
