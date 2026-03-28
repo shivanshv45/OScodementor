@@ -1,77 +1,100 @@
 "use client"
 
-import type React from "react"
+import { useState, useEffect } from "react"
 
-import { Lightbulb, GitBranch, Bug, FileText } from "lucide-react"
+
 
 interface QuickButtonsProps {
   onButtonClick: (question: string) => void
   selectedFile: string | null
+  onOnboardMe?: () => void
+  onBugRadar?: () => void
+  onCodePlayground?: () => void
+  onNeuralWeb?: () => void
 }
 
 interface QuickButton {
   label: string
   question: string
-  icon: React.ReactNode
+  special?: string
 }
 
-export default function QuickButtons({ onButtonClick, selectedFile }: QuickButtonsProps) {
-  const baseButtons: QuickButton[] = [
+export default function QuickButtons({ onButtonClick, selectedFile, onOnboardMe, onBugRadar, onCodePlayground, onNeuralWeb }: QuickButtonsProps) {
+  const [showTooltip, setShowTooltip] = useState(false)
+
+  useEffect(() => {
+    if (showTooltip) {
+      const timer = setTimeout(() => setShowTooltip(false), 3000)
+      return () => clearTimeout(timer)
+    }
+  }, [showTooltip])
+
+  const buttons: QuickButton[] = [
     {
-      label: "Summarize Repo",
-      question:
-        "Provide a comprehensive summary of this repository, including its purpose, main features, and technology stack.",
-      icon: <FileText size={16} />,
+      label: "Neural Web",
+      question: "",
+      special: "neuralweb",
     },
     {
-      label: "How to Contribute",
-      question:
-        "What are the best practices for contributing to this repository? Include setup instructions and guidelines.",
-      icon: <GitBranch size={16} />,
+      label: "Onboard Me",
+      question: "",
+      special: "onboard",
     },
     {
-      label: "Good First Issues",
-      question: "What are some good first issues for a beginner to start contributing to this project?",
-      icon: <Bug size={16} />,
+      label: "Bug Radar",
+      question: "",
+      special: "bugradar",
     },
     {
-      label: "Architecture",
-      question:
-        "Explain the overall architecture and structure of this project. How are the main components organized?",
-      icon: <Lightbulb size={16} />,
+      label: selectedFile ? "Playground" : "Playground — Open a file first",
+      question: "",
+      special: "playground",
     },
   ]
 
-  const fileButtons: QuickButton[] = selectedFile
-    ? [
-        {
-          label: "Explain File",
-          question: `Explain the code in ${selectedFile}. What does it do and how does it work?`,
-          icon: <FileText size={16} />,
-        },
-        {
-          label: "Summarize File",
-          question: `Provide a brief summary of ${selectedFile}. What are the key functions and their purposes?`,
-          icon: <Lightbulb size={16} />,
-        },
-      ]
-    : []
-
-  const buttons = selectedFile ? [...baseButtons.slice(0, 2), ...fileButtons, ...baseButtons.slice(2)] : baseButtons
+  const handleClick = (btn: QuickButton) => {
+    if (btn.special === 'onboard' && onOnboardMe) return onOnboardMe()
+    if (btn.special === 'bugradar' && onBugRadar) return onBugRadar()
+    if (btn.special === 'playground') {
+      if (!selectedFile) {
+        setShowTooltip(true)
+        return
+      }
+      if (onCodePlayground) return onCodePlayground()
+    }
+    if (btn.special === 'neuralweb' && onNeuralWeb) return onNeuralWeb()
+  }
 
   return (
-    <div className="grid grid-cols-2 gap-2">
-      {buttons.map((btn, idx) => (
-        <button
-          key={idx}
-          onClick={() => onButtonClick(btn.question)}
-          className="console-text console-button rounded-md px-3 py-2 text-xs font-semibold hover:opacity-90 transition-all duration-200 active:scale-95 flex items-center justify-center gap-2"
-          title={btn.question}
-        >
-          {btn.icon}
-          <span>{btn.label}</span>
-        </button>
-      ))}
+    <div className="relative">
+      {showTooltip && (
+        <div className="absolute -top-10 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-md text-xs font-mono whitespace-nowrap animate-pulse"
+          style={{ background: 'rgba(147, 51, 234, 0.15)', border: '1px solid rgba(147, 51, 234, 0.3)', color: '#c084fc' }}>
+          ↗ Open a file from the explorer first
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+      {buttons.map((btn, idx) => {
+        const needsFile = btn.special === 'playground' && !selectedFile;
+
+        return (
+          <button
+            key={idx}
+            onClick={() => handleClick(btn)}
+            className={`console-text rounded-md px-3 py-2 text-xs font-semibold transition-all duration-200 flex items-center justify-center gap-2 ${needsFile ? 'opacity-50 border border-purple-500/20 bg-purple-500/5 text-purple-400/60 hover:opacity-70 hover:bg-purple-500/10 active:scale-95' :
+                btn.special === 'onboard' ? 'border border-emerald-500/30 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 active:scale-95'
+                  : btn.special === 'bugradar' ? 'border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 active:scale-95'
+                    : btn.special === 'playground' ? 'border border-purple-500/30 bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 active:scale-95'
+                      : btn.special === 'neuralweb' ? 'border border-violet-500/30 bg-violet-500/10 text-violet-400 hover:bg-violet-500/20 active:scale-95'
+                        : 'border-gray-700 bg-gray-800'
+              }`}
+            title={needsFile ? "Select a file first to use Playground" : btn.label}
+          >
+            <span>{btn.label}</span>
+          </button>
+        )
+      })}
+      </div>
     </div>
   )
 }

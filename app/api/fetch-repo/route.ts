@@ -1,12 +1,12 @@
 // Smart repository fetching with caching
 import { fetchCompleteRepositoryData } from '@/lib/github'
 import { getRepositoryByUrl, updateRepositoryAccess } from '@/lib/database'
-import { searchFilesInRepository } from '@/lib/elasticsearch'
+import { searchFilesInRepository } from '@/lib/search-adapter'
 import { ApiError } from '@/lib/types'
 
 export async function POST(request: Request) {
   console.log('🔍 API Route: fetch-repo called')
-  
+
   try {
     // Parse request body
     let repoUrl: string
@@ -59,20 +59,20 @@ export async function POST(request: Request) {
       console.error('❌ Database error:', dbError)
       // Continue without cache if database fails
     }
-    
+
     if (cachedRepo) {
       // Check if cache is still valid
       const now = new Date()
       const lastIndexed = new Date(cachedRepo.indexed_at)
       const ttlHours = cachedRepo.cache_ttl_hours || 24
       const cacheExpiry = new Date(lastIndexed.getTime() + (ttlHours * 60 * 60 * 1000))
-      
+
       const isCacheValid = now < cacheExpiry
       const isCompleted = cachedRepo.index_status === 'completed'
-      
+
       if (isCacheValid && isCompleted) {
         console.log('✅ Repository found in cache, loading from cache...')
-        
+
         // Update access count
         try {
           await updateRepositoryAccess(cachedRepo.id)
@@ -80,7 +80,7 @@ export async function POST(request: Request) {
           console.error('❌ Error updating access count:', accessError)
           // Continue even if access count update fails
         }
-        
+
         // Get files from Elasticsearch
         try {
           const indexedFiles = await searchFilesInRepository(cachedRepo.id, '*')
@@ -180,15 +180,42 @@ export async function POST(request: Request) {
           console.error('❌ Error loading from Elasticsearch, falling back to GitHub API:', elasticError)
           // Continue to GitHub API fallback
         }
-      } else if (cachedRepo.index_status === 'indexing') {
+      } else if (cachedRepo.index_status === 'indexing' || cachedRepo.index_status === 'pending') {
         console.log('⏳ Repository is currently being indexed...')
+        // Still return basic repo shape so the frontend can show the name / stars
+        let basicRepoData: {
+          name: string, description: string, stars: number,
+          languages: any[], files: any[], issues: any[]
+        } = {
+          name: cachedRepo.repo_name || 'Unknown Repository',
+          description: cachedRepo.repo_description || 'Repository is being indexed...',
+          stars: cachedRepo.repo_stars || 0,
+          languages: cachedRepo.repo_languages || [],
+          files: [],
+          issues: [],
+        }
+        // Try to quickly fetch tree from GitHub for the file explorer
+        try {
+          const freshData = await fetchCompleteRepositoryData(repoUrl)
+          basicRepoData = {
+            name: freshData.name || basicRepoData.name,
+            description: freshData.description || basicRepoData.description,
+            stars: freshData.stars || basicRepoData.stars,
+            languages: freshData.languages || basicRepoData.languages,
+            files: freshData.files || [],
+            issues: freshData.issues || [],
+          }
+        } catch (e) {
+          console.warn('⚠️ Could not fetch repo data during indexing (non-fatal)')
+        }
         return Response.json({
+          ...basicRepoData,
           indexing: true,
           repoId: cachedRepo.id,
-          message: 'Repository is currently being indexed. Please wait...'
         })
-      } else {
-        console.log('⏰ Cache expired, fetching fresh data...')
+      } else if (cachedRepo.index_status === 'failed') {
+        console.log('❌ Previous indexing failed, allowing re-index...')
+        // Fall through to re-fetch from GitHub
       }
     }
 
@@ -196,7 +223,7 @@ export async function POST(request: Request) {
 
     // Fetch repository data from GitHub API
     const repoData = await fetchCompleteRepositoryData(repoUrl)
-    
+
     console.log('✅ Repository data fetched successfully:', {
       name: repoData.name,
       stars: repoData.stars,
@@ -279,7 +306,7 @@ export async function POST(request: Request) {
     // Handle unexpected errors
     console.log('🔍 Handling unexpected error')
     return Response.json(
-      { 
+      {
         error: 'An unexpected error occurred while fetching repository data',
         details: error.message || 'Unknown error'
       },

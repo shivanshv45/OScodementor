@@ -2,10 +2,17 @@
 
 import { RepoData } from './types'
 
-export async function fetchRepoData(repoUrl: string): Promise<RepoData> {
+export type FetchedRepoData = RepoData & {
+  cached?: boolean
+  cacheAge?: number
+  indexing?: boolean
+  repoId?: string
+}
+
+export async function fetchRepoData(repoUrl: string): Promise<FetchedRepoData> {
   try {
     console.log('Frontend: Fetching repository data for:', repoUrl)
-    
+
     const response = await fetch('/api/fetch-repo', {
       method: 'POST',
       headers: {
@@ -45,7 +52,7 @@ export async function fetchRepoData(repoUrl: string): Promise<RepoData> {
       filesCount: data.files?.length || 0,
       issuesCount: data.issues?.length || 0
     })
-    
+
     return data
   } catch (error: any) {
     console.error('Frontend: Error fetching repository data:', error)
@@ -62,38 +69,43 @@ export async function queryAI(
 ): Promise<string> {
   try {
     console.log('Frontend: Querying AI for:', question)
-    
+
     const response = await fetch('/api/query-ai', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ 
-        question, 
-        file, 
-        skillLevel, 
+      body: JSON.stringify({
+        question,
+        file,
+        skillLevel,
         repoUrl,
-        conversationHistory 
+        conversationHistory
       }),
     })
 
     if (!response.ok) {
       let errorMessage = 'Failed to get AI response'
       try {
-        const errorData = await response.json()
-        errorMessage = errorData.error || errorMessage
-        console.error('Frontend: AI API Error Response:', errorData)
-      } catch (jsonError) {
-        console.error('Frontend: Failed to parse AI error response:', jsonError)
-        const textResponse = await response.text()
-        errorMessage = `AI service error (${response.status}): ${textResponse || 'Unknown error'}`
+        const textBody = await response.text()
+        try {
+          const errorData = JSON.parse(textBody)
+          errorMessage = errorData.error || errorMessage
+          console.error('Frontend: AI API Error Response:', errorData)
+        } catch (jsonError) {
+          console.error('Frontend: Failed to parse AI error response as JSON')
+          errorMessage = `AI service error (${response.status}): ${textBody || 'Unknown error'}`
+        }
+      } catch (readError) {
+        console.error('Frontend: Failed to read AI error response body')
+        errorMessage = `AI service error (${response.status})`
       }
       throw new Error(errorMessage)
     }
 
     const data = await response.json()
     console.log('Frontend: Successfully received AI response')
-    
+
     return data.answer
   } catch (error: any) {
     console.error('Frontend: Error querying AI:', error)

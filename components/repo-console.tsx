@@ -5,36 +5,21 @@ import { ChevronLeft, Settings } from "lucide-react"
 import ChatWindow from "./chat-window"
 import FileExplorer from "./file-explorer"
 import SettingsPopup from "./settings-popup"
-import { fetchRepoData, queryAI } from "@/lib/api"
+import { fetchRepoData, queryAI, FetchedRepoData } from "@/lib/api"
+import dynamic from "next/dynamic"
+
+// Lazy-load heavy feature components
+const OnboardMe = dynamic(() => import("./onboard-me"), { ssr: false })
+const BugRadar = dynamic(() => import("./bug-radar"), { ssr: false })
+const CodePlayground = dynamic(() => import("./code-playground"), { ssr: false })
+const CodeNeuralWeb = dynamic(() => import("./code-neural-web"), { ssr: false })
 
 interface RepoConsoleProps {
   repoUrl: string
   onBack: () => void
 }
 
-interface RepoData {
-  name: string
-  description: string
-  stars: number
-  languages: string[]
-  files: Array<{
-    path: string
-    type: "file" | "folder"
-    children?: Array<{
-      path: string
-      type: "file" | "folder"
-      children?: Array<{
-        path: string
-        type: "file" | "folder"
-      }>
-    }>
-  }>
-  issues: Array<{ title: string; url: string; labels: string[] }>
-  cached?: boolean
-  cacheAge?: number
-  indexing?: boolean
-  repoId?: string
-}
+type RepoData = FetchedRepoData
 
 interface ChatMessage {
   id: string
@@ -48,6 +33,13 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [skillLevel, setSkillLevel] = useState<"beginner" | "intermediate" | "expert">("beginner")
+
+  // Feature modal states
+  const [showOnboard, setShowOnboard] = useState(false)
+  const [showBugRadar, setShowBugRadar] = useState(false)
+  const [showPlayground, setShowPlayground] = useState(false)
+  const [showNeuralWeb, setShowNeuralWeb] = useState(false)
+  const [playgroundCode, setPlaygroundCode] = useState<string>('')
 
   // Load skill level from localStorage on mount
   useEffect(() => {
@@ -73,10 +65,10 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
     const loadRepo = async () => {
       // Store repoUrl in sessionStorage for file content fetching
       sessionStorage.setItem('currentRepoUrl', repoUrl)
-      
+
       try {
         const data = await fetchRepoData(repoUrl)
-        
+
         // Check if repository is being indexed
         if (data.indexing && data.repoId) {
           setIsIndexing(true)
@@ -84,14 +76,14 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
         } else {
           setIsIndexing(false)
           setIndexingRepoId(null)
-          
+
           // If not cached and not indexing, start indexing
           if (!data.cached && !data.indexing) {
             console.log('🔄 Starting indexing for new repository...')
             await startIndexing(repoUrl)
           }
         }
-        
+
         setRepoData(data)
       } catch (error) {
         console.error('Error loading repository:', error)
@@ -109,7 +101,7 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ repoUrl })
       })
-      
+
       if (response.ok) {
         const data = await response.json()
         setIsIndexing(true)
@@ -153,6 +145,9 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
   const handleExplainFile = async (filePath: string, code: string) => {
     const messageId = Date.now().toString()
 
+    // Store code for potential playground use
+    setPlaygroundCode(code)
+
     // Add user message
     setChatMessages((prev) => [
       ...prev,
@@ -165,12 +160,16 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
     ])
 
     // Get AI response
+    const conversationHistory = chatMessages.slice(-5).map(m => ({
+      role: m.type === 'user' ? 'user' : 'assistant',
+      content: m.content
+    }))
     const response = await queryAI(
       `Please explain the following code from ${filePath}:\n\n${code}`,
       filePath,
       skillLevel,
       repoUrl,
-      chatMessages.slice(-5)
+      conversationHistory
     )
 
     // Add AI response
@@ -188,13 +187,37 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
   // Update selected file and clear chat context when file is closed
   const handleFileContextChange = (newSelectedFile: string | null) => {
     setSelectedFile(newSelectedFile)
-    
+    setPlaygroundCode('')
+
     // Clear file-specific context from chat when file is closed
     if (!newSelectedFile) {
       setChatMessages(prev => prev.map(msg => ({
         ...msg,
         context: msg.type === 'ai' ? undefined : msg.context
       })))
+    }
+  }
+
+  // Handle opening Code Playground
+  const handleOpenPlayground = async () => {
+    if (!selectedFile) return;
+    if (playgroundCode) {
+      setShowPlayground(true)
+      return;
+    }
+    try {
+      const res = await fetch('/api/fetch-file-content', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repoUrl, filePath: selectedFile })
+      })
+      const data = await res.json()
+      if (data.content) {
+        setPlaygroundCode(data.content)
+        setShowPlayground(true)
+      }
+    } catch (err) {
+      console.error("Failed to fetch playground code:", err)
     }
   }
 
@@ -261,7 +284,7 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
             skillLevel={skillLevel}
             repoUrl={repoUrl}
             isIndexing={isIndexing}
-            repoId={indexingRepoId}
+            repoId={indexingRepoId || undefined}
             onIndexingComplete={async () => {
               try {
                 const data = await fetchRepoData(repoUrl)
@@ -279,14 +302,17 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
                 context: msg.type === 'ai' ? undefined : msg.context
               })))
             }}
+            onOnboardMe={() => setShowOnboard(true)}
+            onBugRadar={() => setShowBugRadar(true)}
+            onCodePlayground={handleOpenPlayground}
+            onNeuralWeb={() => setShowNeuralWeb(true)}
           />
         </div>
 
         <div
           onMouseDown={() => setIsDragging(true)}
-          className={`w-1 bg-accent/20 hover:bg-accent/60 cursor-col-resize transition-colors ${
-            isDragging ? "bg-accent/80" : ""
-          }`}
+          className={`w-1 bg-accent/20 hover:bg-accent/60 cursor-col-resize transition-colors ${isDragging ? "bg-accent/80" : ""
+            }`}
         />
 
         {/* Right Panel - File Explorer */}
@@ -304,12 +330,46 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
         </div>
       </div>
 
-        <SettingsPopup 
-          isOpen={isSettingsOpen} 
-          onClose={() => setIsSettingsOpen(false)}
-          skillLevel={skillLevel}
-          onSkillLevelChange={handleSkillLevelChange}
+      <SettingsPopup
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        skillLevel={skillLevel}
+        onSkillLevelChange={handleSkillLevelChange}
+      />
+
+      {/* Feature Modals */}
+      {showOnboard && (
+        <OnboardMe
+          repoUrl={repoUrl}
+          repoName={safeRepoData.name}
+          onFileSelect={(path) => { handleFileContextChange(path); setShowOnboard(false) }}
+          onClose={() => setShowOnboard(false)}
         />
+      )}
+      {showBugRadar && (
+        <BugRadar
+          repoUrl={repoUrl}
+          repoName={safeRepoData.name}
+          onFileSelect={(path) => { handleFileContextChange(path); setShowBugRadar(false) }}
+          onClose={() => setShowBugRadar(false)}
+        />
+      )}
+      {showPlayground && selectedFile && playgroundCode && (
+        <CodePlayground
+          filePath={selectedFile}
+          code={playgroundCode}
+          skillLevel={skillLevel}
+          onClose={() => setShowPlayground(false)}
+        />
+      )}
+      {showNeuralWeb && (
+        <CodeNeuralWeb
+          files={safeRepoData.files}
+          repoName={safeRepoData.name}
+          onFileSelect={(path) => handleFileContextChange(path)}
+          onClose={() => setShowNeuralWeb(false)}
+        />
+      )}
     </div>
   )
 }

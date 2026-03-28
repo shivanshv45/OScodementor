@@ -1,14 +1,26 @@
 // Database connection and schema for CodeMentor indexing system
 import { Pool } from 'pg'
 
-// Database connection pool with improved configuration
+// Strip channel_binding param from DATABASE_URL since node-postgres doesn't support it
+function sanitizeDatabaseUrl(url?: string): string | undefined {
+  if (!url) return url
+  try {
+    const parsed = new URL(url)
+    parsed.searchParams.delete('channel_binding')
+    return parsed.toString()
+  } catch {
+    return url
+  }
+}
+
+// Database connection pool — SSL always enabled for Neon
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-  max: 20, // Maximum number of clients in the pool
-  idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 10000, // Return an error after 10 seconds if connection could not be established
-  maxUses: 7500, // Close (and replace) a connection after it has been used 7500 times
+  connectionString: sanitizeDatabaseUrl(process.env.DATABASE_URL),
+  ssl: { rejectUnauthorized: false },
+  max: 5,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
+  maxUses: 7500,
 })
 
 // Database schema interfaces
@@ -67,7 +79,7 @@ export interface IndexingProgress {
 // Initialize database tables
 export async function initializeDatabase() {
   const client = await pool.connect()
-  
+
   try {
     // Create repositories table
     await client.query(`
@@ -217,9 +229,20 @@ export async function createRepository(repoData: Omit<IndexedRepository, 'id' | 
         index_status, index_progress, total_files, indexed_files, cache_ttl_hours,
         repo_summary, quickstart, contribution_guide, good_first_issues
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      ON CONFLICT (repo_url) DO UPDATE SET
+        repo_name = EXCLUDED.repo_name,
+        repo_owner = EXCLUDED.repo_owner,
+        repo_description = EXCLUDED.repo_description,
+        repo_stars = EXCLUDED.repo_stars,
+        index_status = 'pending',
+        index_progress = 0,
+        total_files = 0,
+        indexed_files = 0,
+        error_message = NULL,
+        updated_at = NOW()
       RETURNING *
     `, [
-      repoData.repo_url, repoData.repo_name, repoData.repo_owner, 
+      repoData.repo_url, repoData.repo_name, repoData.repo_owner,
       repoData.repo_description, repoData.repo_stars, repoData.repo_language,
       repoData.repo_languages, repoData.repo_default_branch, repoData.repo_updated_at,
       repoData.index_status, repoData.index_progress, repoData.total_files,
@@ -239,29 +262,29 @@ async function withRetry<T>(
   baseDelay: number = 1000
 ): Promise<T> {
   let lastError: Error
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await operation()
     } catch (error: any) {
       lastError = error
       console.warn(`Database operation failed (attempt ${attempt}/${maxRetries}):`, error.message)
-      
+
       if (attempt === maxRetries) {
         throw error
       }
-      
+
       // Exponential backoff
       const delay = baseDelay * Math.pow(2, attempt - 1)
       await new Promise(resolve => setTimeout(resolve, delay))
     }
   }
-  
+
   throw lastError!
 }
 
 export async function updateRepositoryStatus(
-  repoId: string, 
+  repoId: string,
   status: IndexedRepository['index_status'],
   progress: number,
   currentStep: string,
@@ -270,15 +293,15 @@ export async function updateRepositoryStatus(
   indexedFiles?: number
 ): Promise<void> {
   console.log(`🔍 updateRepositoryStatus called with:`, { repoId, status, progress, currentStep })
-  
+
   await withRetry(async () => {
     console.log(`🔍 Getting database connection...`)
     const client = await pool.connect()
     console.log(`✅ Database connection acquired`)
-    
+
     try {
       console.log(`📊 Updating repository status: ${repoId} -> ${status} (${progress}%)`)
-      
+
       console.log(`🔍 Executing UPDATE query...`)
       const updateResult = await client.query(`
         UPDATE indexed_repositories 
@@ -302,7 +325,7 @@ export async function updateRepositoryStatus(
           updated_at = NOW()
       `, [repoId, status, progress, currentStep, errorMessage, totalFiles || 0, indexedFiles || 0])
       console.log(`✅ Progress table query completed`)
-      
+
       console.log(`✅ Repository status updated successfully: ${repoId}`)
     } catch (queryError: any) {
       console.error(`❌ Database query failed:`, queryError.message)

@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useState, useRef, useEffect } from "react"
-import { Send, Zap, MessageCircle, Download } from "lucide-react"
+import { Send, MessageCircle, Download } from "lucide-react"
 import QuickButtons from "./quick-buttons"
 import { queryAI } from "@/lib/api"
 import IndexingProgress from "./indexing-progress"
@@ -44,10 +44,15 @@ interface ChatWindowProps {
   isIndexing?: boolean
   repoId?: string
   onIndexingComplete?: () => void
+  onError?: (error: string) => void
   onClearFileContext?: () => void
+  onOnboardMe?: () => void
+  onBugRadar?: () => void
+  onCodePlayground?: () => void
+  onNeuralWeb?: () => void
 }
 
-export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl, isIndexing, repoId, onIndexingComplete, onClearFileContext }: ChatWindowProps) {
+export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl, isIndexing, repoId, onIndexingComplete, onError, onClearFileContext, onOnboardMe, onBugRadar, onCodePlayground, onNeuralWeb }: ChatWindowProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "1",
@@ -88,7 +93,7 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
             contributionGuide: data.insights.contribution_guide || undefined
           })
         }
-      } catch {}
+      } catch { }
     }
     loadInsights()
   }, [repoUrl])
@@ -115,7 +120,11 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
         contextualQuestion = `Regarding the file "${selectedFile}": ${question}`
       }
 
-      const response = await queryAI(contextualQuestion, selectedFile, skillLevel, repoUrl, messages.slice(-5))
+      const conversationHistory = messages.slice(-5).map(m => ({
+        role: m.type === 'user' ? 'user' : 'assistant',
+        content: m.content
+      }))
+      const response = await queryAI(contextualQuestion, selectedFile, skillLevel, repoUrl, conversationHistory)
       const aiMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         type: "ai",
@@ -164,7 +173,7 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
       {/* Indexing Progress */}
       {isIndexing && repoId && (
         <div className="p-4 border-b console-border">
-          <IndexingProgress 
+          <IndexingProgress
             repoId={repoId}
             onComplete={() => {
               // Soft refresh: keep user in context instead of full reload
@@ -183,7 +192,7 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
                 }
                 // Notify parent to re-fetch repo data and re-enable UI
                 onIndexingComplete?.()
-              } catch {}
+              } catch { }
             }}
             onError={(error) => {
               console.error('Indexing error:', error)
@@ -234,7 +243,7 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
             </div>
           </div>
         )}
-        
+
         {isIndexing && (
           <div className="flex items-center justify-center h-full text-center">
             <div className="space-y-3">
@@ -249,11 +258,10 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
           <div key={msg.id} className={`flex ${msg.type === "user" ? "justify-end" : "justify-start"}`}>
             <div className="flex flex-col gap-1 max-w-xs lg:max-w-md">
               <div
-                className={`console-text rounded-lg px-4 py-3 ${
-                  msg.type === "user"
-                    ? "bg-accent/20 border border-accent/50 text-foreground"
-                    : "bg-card/60 border border-accent/30 text-foreground"
-                }`}
+                className={`console-text rounded-lg px-4 py-3 ${msg.type === "user"
+                  ? "bg-accent/20 border border-accent/50 text-foreground"
+                  : "bg-card/60 border border-accent/30 text-foreground"
+                  }`}
               >
                 {msg.type === "ai" && <span className="text-accent mr-2">{"> "}</span>}
                 {msg.type === "ai" ? (
@@ -261,14 +269,13 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
-                        code: ({ node, inline, className, children, ...props }) => {
-                          // Only render as code block if it's not inline AND has multiple lines or specific language class
-                          const isCodeBlock = !inline && (
-                            className?.includes('language-') || 
+                        code: ({ className, children, ...props }: any) => {
+                          // In react-markdown v10+, inline code doesn't have className
+                          const isCodeBlock =
+                            className?.includes('language-') ||
                             String(children).includes('\n') ||
                             String(children).length > 50
-                          )
-                          
+
                           return isCodeBlock ? (
                             <pre className="bg-muted/20 border border-accent/30 rounded-md p-3 my-2 overflow-x-auto">
                               <code className={className} {...props}>
@@ -328,10 +335,16 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
       {/* Quick Buttons */}
       <div className="px-6 py-4 console-border border-t bg-card/30">
         <div className="flex items-center gap-2 mb-3">
-          <Zap size={16} className="text-accent" />
           <span className="console-text text-xs text-muted-foreground">Quick Actions</span>
         </div>
-        <QuickButtons onButtonClick={handleSendMessage} selectedFile={selectedFile} />
+        <QuickButtons
+          onButtonClick={handleSendMessage}
+          selectedFile={selectedFile}
+          onOnboardMe={onOnboardMe}
+          onBugRadar={onBugRadar}
+          onCodePlayground={onCodePlayground}
+          onNeuralWeb={onNeuralWeb}
+        />
       </div>
 
       {/* Input Area */}
@@ -351,7 +364,7 @@ export default function ChatWindow({ repoData, selectedFile, skillLevel, repoUrl
             </button>
           </div>
         )}
-        
+
         <form
           onSubmit={(e) => {
             e.preventDefault()

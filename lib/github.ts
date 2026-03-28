@@ -1,10 +1,10 @@
 // GitHub API utility functions for repository data fetching
 
 import { Octokit } from '@octokit/rest'
-import { 
-  GitHubRepository, 
-  GitHubTreeResponse, 
-  GitHubIssue, 
+import {
+  GitHubRepository,
+  GitHubTreeResponse,
+  GitHubIssue,
   GitHubLanguage,
   GitHubApiResponse,
   GitHubRateLimit,
@@ -25,21 +25,21 @@ const octokit = new Octokit({
 export function parseGitHubUrl(repoUrl: string): { owner: string; repo: string } | null {
   try {
     const url = new URL(repoUrl)
-    
+
     // Handle both github.com and www.github.com
     if (!url.hostname.includes('github.com')) {
       return null
     }
-    
+
     const pathParts = url.pathname.split('/').filter(part => part.length > 0)
-    
+
     if (pathParts.length < 2) {
       return null
     }
-    
+
     const owner = pathParts[0]
     const repo = pathParts[1].replace(/\.git$/, '') // Remove .git suffix if present
-    
+
     return { owner, repo }
   } catch (error) {
     return null
@@ -52,21 +52,24 @@ export function parseGitHubUrl(repoUrl: string): { owner: string; repo: string }
 export async function fetchRepository(owner: string, repo: string): Promise<GitHubRepository> {
   try {
     console.log(`🔍 GitHub API: Fetching repository ${owner}/${repo}`)
-    
+
     const response: GitHubApiResponse<GitHubRepository> = await Promise.race([
       octokit.rest.repos.get({
         owner,
         repo,
       }),
-      new Promise((_, reject) => 
+      new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Repository fetch timeout after 5 seconds')), 5000)
       )
     ]) as GitHubApiResponse<GitHubRepository>
-    
+
     console.log(`✅ GitHub API: Repository fetched successfully`)
     return response.data
   } catch (error: any) {
     console.error(`❌ GitHub API: Error fetching repository:`, error.message)
+    if (error.status === 401) {
+      throw new ApiError('GitHub token is invalid or has been revoked. Please generate a new token.', 401, 'GITHUB_ERROR')
+    }
     if (error.status === 404) {
       throw new ApiError('Repository not found or is private', 404, 'NOT_FOUND')
     }
@@ -89,13 +92,13 @@ export async function fetchRepositoryLanguages(owner: string, repo: string): Pro
       owner,
       repo,
     })
-    
+
     // Sort languages by bytes of code (descending) and return top 10
     const sortedLanguages = Object.entries(response.data)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 10)
       .map(([language]) => language)
-    
+
     return sortedLanguages
   } catch (error: any) {
     console.warn('Failed to fetch repository languages:', error.message)
@@ -109,7 +112,7 @@ export async function fetchRepositoryLanguages(owner: string, repo: string): Pro
 export async function fetchRepositoryTree(owner: string, repo: string, branch: string = 'main'): Promise<GitHubTreeResponse> {
   try {
     console.log(`🔍 GitHub API: Fetching repository tree for ${owner}/${repo} (${branch})`)
-    
+
     // First, get the branch reference to get the tree SHA
     const branchRef = await Promise.race([
       octokit.rest.git.getRef({
@@ -117,13 +120,13 @@ export async function fetchRepositoryTree(owner: string, repo: string, branch: s
         repo,
         ref: `heads/${branch}`,
       }),
-      new Promise((_, reject) => 
+      new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Branch ref fetch timeout after 5 seconds')), 5000)
       )
     ]) as any
-    
+
     const commitSha = branchRef.data.object.sha
-    
+
     // Get the commit to get the tree SHA
     const commit = await Promise.race([
       octokit.rest.git.getCommit({
@@ -131,13 +134,13 @@ export async function fetchRepositoryTree(owner: string, repo: string, branch: s
         repo,
         commit_sha: commitSha,
       }),
-      new Promise((_, reject) => 
+      new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Commit fetch timeout after 5 seconds')), 5000)
       )
     ]) as any
-    
+
     const treeSha = commit.data.tree.sha
-    
+
     // Get the tree with recursive listing
     const response: GitHubApiResponse<GitHubTreeResponse> = await Promise.race([
       octokit.rest.git.getTree({
@@ -146,11 +149,11 @@ export async function fetchRepositoryTree(owner: string, repo: string, branch: s
         tree_sha: treeSha,
         recursive: 'true',
       }),
-      new Promise((_, reject) => 
+      new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Tree fetch timeout after 10 seconds')), 10000)
       )
     ]) as GitHubApiResponse<GitHubTreeResponse>
-    
+
     console.log(`✅ GitHub API: Repository tree fetched successfully (${response.data.tree.length} items)`)
     return response.data
   } catch (error: any) {
@@ -187,13 +190,25 @@ async function withRetry<T>(
   }
 }
 
+// Cache for default branch per owner/repo to avoid redundant API calls
+const defaultBranchCache = new Map<string, string>()
+
 /**
  * Fetch raw file content from GitHub (text files only)
  */
 export async function fetchRawFileContent(owner: string, repo: string, path: string, ref?: string): Promise<{ content: string; size: number } | null> {
   try {
-    const repoMeta = await withRetry(() => octokit.rest.repos.get({ owner, repo }))
-    const branch = ref || repoMeta.data.default_branch || 'main'
+    let branch = ref
+    if (!branch) {
+      const cacheKey = `${owner}/${repo}`
+      if (defaultBranchCache.has(cacheKey)) {
+        branch = defaultBranchCache.get(cacheKey)!
+      } else {
+        const repoMeta = await withRetry(() => octokit.rest.repos.get({ owner, repo }))
+        branch = repoMeta.data.default_branch || 'main'
+        defaultBranchCache.set(cacheKey, branch)
+      }
+    }
 
     const response = await withRetry(() => octokit.rest.repos.getContent({ owner, repo, path, ref: branch }))
     if (Array.isArray(response.data)) {
@@ -293,7 +308,7 @@ export async function fetchGoodFirstIssues(owner: string, repo: string): Promise
       sort: 'created',
       direction: 'asc',
     })
-    
+
     return response.data
   } catch (error: any) {
     console.warn('Failed to fetch good first issues:', error.message)
@@ -306,10 +321,10 @@ export async function fetchGoodFirstIssues(owner: string, repo: string): Promise
  */
 export function buildFileTree(treeItems: any[]): RepoData['files'] {
   console.log('🔍 GitHub API: Building file tree from', treeItems.length, 'items')
-  
+
   const fileMap = new Map<string, any>()
   const rootFiles: RepoData['files'] = []
-  
+
   // Create a map of all items by path
   treeItems.forEach(item => {
     fileMap.set(item.path, {
@@ -318,12 +333,12 @@ export function buildFileTree(treeItems: any[]): RepoData['files'] {
       children: []
     })
   })
-  
+
   // Build hierarchy
   treeItems.forEach(item => {
     const pathParts = item.path.split('/')
     const isRoot = pathParts.length === 1
-    
+
     if (isRoot) {
       rootFiles.push(fileMap.get(item.path)!)
     } else {
@@ -339,7 +354,7 @@ export function buildFileTree(treeItems: any[]): RepoData['files'] {
       }
     }
   })
-  
+
   // Sort items: folders first, then files
   const sortItems = (items: any[]) => {
     return items.sort((a, b) => {
@@ -348,7 +363,7 @@ export function buildFileTree(treeItems: any[]): RepoData['files'] {
       return a.path.localeCompare(b.path)
     })
   }
-  
+
   const sortRecursively = (items: any[]) => {
     sortItems(items)
     items.forEach(item => {
@@ -357,9 +372,9 @@ export function buildFileTree(treeItems: any[]): RepoData['files'] {
       }
     })
   }
-  
+
   sortRecursively(rootFiles)
-  
+
   console.log('✅ GitHub API: File tree built with', rootFiles.length, 'root items')
   return rootFiles
 }
@@ -387,54 +402,54 @@ export async function getRateLimit(): Promise<GitHubRateLimit> {
  */
 export async function fetchCompleteRepositoryData(repoUrl: string): Promise<RepoData> {
   console.log('🔍 GitHub API: Starting repository data fetch for:', repoUrl)
-  
+
   // Parse the repository URL
   const parsed = parseGitHubUrl(repoUrl)
   if (!parsed) {
     console.log('❌ GitHub API: Invalid URL format')
     throw new ApiError('Invalid GitHub repository URL', 400, 'INVALID_URL')
   }
-  
+
   const { owner, repo } = parsed
   console.log('✅ GitHub API: Parsed URL - owner:', owner, 'repo:', repo)
-  
+
   // Check rate limit before making requests
   console.log('🔍 GitHub API: Checking rate limit...')
   const rateLimit = await getRateLimit()
   console.log('📊 GitHub API: Rate limit status:', rateLimit)
-  
+
   if (rateLimit.remaining < 5) {
     console.log('❌ GitHub API: Rate limit exceeded')
     throw new ApiError('GitHub API rate limit exceeded. Please try again later.', 429, 'RATE_LIMITED')
   }
-  
+
   try {
     console.log('🚀 GitHub API: Fetching repository data in parallel...')
-    
+
     // First fetch repository to get default branch
     const repository = await fetchRepository(owner, repo)
     console.log('✅ GitHub API: Repository fetched:', repository.name)
-    
+
     // Then fetch other data in parallel
     const [languages, tree, issues] = await Promise.all([
       fetchRepositoryLanguages(owner, repo),
       fetchRepositoryTree(owner, repo, repository.default_branch),
       fetchGoodFirstIssues(owner, repo)
     ])
-    
+
     console.log('✅ GitHub API: All data fetched - languages:', languages.length, 'tree items:', tree.tree.length, 'issues:', issues.length)
-    
+
     // Build file tree structure
     const files = buildFileTree(tree.tree)
     console.log('✅ GitHub API: File tree built with', files.length, 'root items')
-    
+
     // Transform issues to match expected format
     const transformedIssues = issues.map(issue => ({
       title: issue.title,
       url: issue.html_url,
       labels: issue.labels.map(label => label.name)
     }))
-    
+
     const result = {
       name: repository.name || 'Unknown Repository',
       description: repository.description || 'No description available',
@@ -443,18 +458,18 @@ export async function fetchCompleteRepositoryData(repoUrl: string): Promise<Repo
       files: files || [],
       issues: transformedIssues || []
     }
-    
+
     console.log('✅ GitHub API: Repository data prepared successfully')
     return result
   } catch (error: any) {
     console.error('❌ GitHub API: Error in fetchCompleteRepositoryData:', error)
-    
+
     // If it's a timeout or network error, provide a fallback response
     if (error.message?.includes('timeout') || error.message?.includes('network')) {
       console.log('🔄 GitHub API timeout/network error, providing fallback data')
       const urlParts = repoUrl.replace('https://github.com/', '').split('/')
       const repoName = urlParts[1] || 'Unknown Repository'
-      
+
       return {
         name: repoName,
         description: 'Repository data temporarily unavailable',
@@ -464,7 +479,7 @@ export async function fetchCompleteRepositoryData(repoUrl: string): Promise<Repo
         issues: []
       }
     }
-    
+
     if (error instanceof ApiError) {
       throw error
     }

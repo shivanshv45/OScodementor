@@ -1,21 +1,148 @@
 // Gemini AI integration for intelligent code analysis and chat
 import { GoogleGenAI } from "@google/genai"
 
-// Initialize Gemini AI with primary key
-const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' })
+// ---------------------------------------------------------------------------
+// Key Manager — supports GEMINI_API_KEY, GEMINI_API_KEY_1, GEMINI_API_KEY_2 …
+// Ported from Orbit backend key_manager.py
+// ---------------------------------------------------------------------------
+class GeminiKeyManager {
+  private keys: string[]
+  private currentIndex = 0
 
-// Optional secondary key for parallel operations
-const genAISearch = process.env.GEMINI_API_KEY_SEARCH 
-  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY_SEARCH })
-  : null
+  constructor() {
+    this.keys = this.loadKeys()
+  }
 
-// Simple retry with exponential backoff for Gemini API calls
+  private loadKeys(): string[] {
+    const keys: string[] = []
+
+    // Load numbered keys first: GEMINI_API_KEY_1, GEMINI_API_KEY_2, …
+    let i = 1
+    while (true) {
+      const key = process.env[`GEMINI_API_KEY_${i}`]
+      if (!key) break
+      keys.push(key)
+      i++
+    }
+
+    // Also load the base key
+    const baseKey = process.env.GEMINI_API_KEY
+    if (baseKey) keys.push(baseKey)
+
+    // Deduplicate
+    const unique = [...new Set(keys.filter(Boolean))]
+    if (unique.length === 0) {
+      console.warn('[Gemini] ⚠️  No GEMINI_API_KEY found in environment')
+    } else {
+      console.log(`[Gemini] Loaded ${unique.length} API key(s)`)
+    }
+    return unique
+  }
+
+  private getNextKey(): string {
+    if (this.keys.length === 0) throw new Error('No Gemini API keys configured')
+    const key = this.keys[this.currentIndex]
+    this.currentIndex = (this.currentIndex + 1) % this.keys.length
+    return key
+  }
+
+  async executeWithRetry<T>(fn: (apiKey: string) => Promise<T>): Promise<T> {
+    let lastError: unknown
+    const attempts = Math.max(this.keys.length, 1)
+
+    for (let i = 0; i < attempts; i++) {
+      const key = this.getNextKey()
+      try {
+        return await fn(key)
+      } catch (err: any) {
+        const msg = String(err?.message || err)
+        const status = err?.status || err?.code
+        if (
+          status === 429 ||
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED') ||
+          msg.includes('quota')
+        ) {
+          console.warn(`[Gemini] Quota exhausted for key …${key.slice(-4)}, trying next key`)
+          lastError = err
+          continue
+        }
+        // Not a quota error — rethrow immediately with real message
+        throw err
+      }
+    }
+    throw new Error(`All Gemini API keys exhausted. Last error: ${lastError}`)
+  }
+}
+
+const keyManager = new GeminiKeyManager()
+
+// ---------------------------------------------------------------------------
+// Core generate helper — tries multiple models with proper fallback for quota/429 errors
+// ---------------------------------------------------------------------------
+async function generateWithFallback(prompt: string): Promise<string> {
+  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite']
+
+  return keyManager.executeWithRetry(async (apiKey) => {
+    const client = new GoogleGenAI({ apiKey })
+    let lastErr: unknown
+
+    for (const model of models) {
+      try {
+        const response = await client.models.generateContent({
+          model,
+          contents: prompt,
+        })
+        const text = response?.text
+        if (!text) throw new Error(`${model} returned empty response`)
+        return text
+      } catch (err: any) {
+        const msg = String(err?.message || err)
+        const status = err?.status || err?.code
+        // If model not found, not supported, OR quota exhausted — try next model
+        if (
+          msg.includes('not found') ||
+          msg.includes('not supported') ||
+          msg.includes('404') ||
+          msg.includes('INVALID_ARGUMENT') ||
+          status === 429 ||
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED') ||
+          msg.includes('quota') ||
+          msg.includes('rate limit')
+        ) {
+          console.warn(`[Gemini] ${model} unavailable/quota-exhausted, trying next model…`)
+          lastErr = err
+          continue
+        }
+        throw err
+      }
+    }
+    // If all models failed with quota errors on this key, signal quota exhaustion
+    // so executeWithRetry rotates to the next key
+    const lastMsg = String((lastErr as any)?.message || lastErr)
+    if (
+      lastMsg.includes('429') ||
+      lastMsg.includes('RESOURCE_EXHAUSTED') ||
+      lastMsg.includes('quota')
+    ) {
+      const quotaErr = new Error(`Quota exhausted for all models: ${lastMsg}`)
+        ; (quotaErr as any).status = 429
+      throw quotaErr
+    }
+    throw lastErr || new Error('All Gemini models failed')
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Simple retry with exponential backoff (for non-quota transient errors)
+// ---------------------------------------------------------------------------
 async function withGeminiRetry<T>(
   fn: () => Promise<T>,
   opts: { retries?: number; baseMs?: number } = {}
 ): Promise<T> {
-  const retries = opts.retries ?? 3
-  const baseMs = opts.baseMs ?? 1000
+  const retries = opts.retries ?? 4
+  const baseMs = opts.baseMs ?? 2000
   let attempt = 0
   while (true) {
     try {
@@ -23,12 +150,14 @@ async function withGeminiRetry<T>(
     } catch (err: any) {
       attempt++
       const status = err?.status || err?.code
-      // Don't retry on 400 (bad request) or 404 (not found)
-      if (attempt > retries || status === 400 || status === 404) throw err
-      // For 503 (overloaded) or 429 (rate limit), retry with backoff
-      if (status === 503 || status === 429) {
-        const delay = baseMs * Math.pow(2, attempt - 1)
-        console.log(`Gemini API ${status}, retrying in ${delay}ms (attempt ${attempt}/${retries})`)
+      const msg = String(err?.message || '')
+      if (attempt > retries || status === 400 || status === 404 || status === 401) throw err
+      if (status === 503 || status === 429 || msg.includes('RESOURCE_EXHAUSTED')) {
+        // Parse retry-after from error message if available
+        const retryMatch = msg.match(/retry\s+in\s+([\d.]+)s/i)
+        const suggestedDelay = retryMatch ? Math.ceil(parseFloat(retryMatch[1]) * 1000) : 0
+        const delay = Math.max(suggestedDelay, baseMs * Math.pow(2, attempt - 1))
+        console.log(`[Gemini] ${status || 'quota error'}, retrying in ${delay}ms (attempt ${attempt}/${retries})`)
         await new Promise(r => setTimeout(r, delay))
         continue
       }
@@ -37,6 +166,9 @@ async function withGeminiRetry<T>(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Public interfaces & functions
+// ---------------------------------------------------------------------------
 export interface ChatContext {
   repoName: string
   repoDescription: string
@@ -63,70 +195,38 @@ export async function generateCodeResponse(
   question: string,
   context: ChatContext
 ): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('Gemini API key not configured. Please add GEMINI_API_KEY to .env.local')
+  }
+
+  const systemPrompt = buildSystemPrompt(context)
+  const userPrompt = buildUserPrompt(question, context)
+  const fullPrompt = `${systemPrompt}\n\n${userPrompt}`
+
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error('Gemini API key not configured. Please add GEMINI_API_KEY to your environment variables.')
-    }
-
-    // Build context-aware prompt
-    const systemPrompt = buildSystemPrompt(context)
-    const userPrompt = buildUserPrompt(question, context)
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`
-
-    // Use secondary key for search operations if available, otherwise primary
-    const client = genAISearch || genAI
-    
-    const response = await withGeminiRetry(() => 
-      client.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: fullPrompt,
-      })
-    )
-
-    if (!response) return "Sorry, something went wrong with the AI service."
-    
-    // Format the response for better readability
-    const formattedResponse = formatResponse(response.text)
-    return formattedResponse
-  } catch (error) {
-    console.error('Error generating Gemini response:', error)
-    throw new Error('Failed to generate AI response')
+    const text = await withGeminiRetry(() => generateWithFallback(fullPrompt))
+    return formatResponse(text)
+  } catch (error: any) {
+    // Surface the real error message — never swallow it
+    console.error('[Gemini] generateCodeResponse failed:', error?.message || error)
+    throw new Error(`AI response failed: ${error?.message || 'Unknown Gemini error'}`)
   }
 }
 
-// Format AI response for better readability
+// ---------------------------------------------------------------------------
+// Format helpers
+// ---------------------------------------------------------------------------
 function formatResponse(text: string): string {
   if (!text) return text
-  
-  // Clean up the response
   let formatted = text.trim()
-  
-  // Only format actual markdown elements, not regular text
-  // Ensure proper spacing around bullet points (only if they start with -)
   formatted = formatted.replace(/\n\s*-\s*/g, '\n- ')
-  
-  // Ensure proper spacing around numbered lists (only if they start with numbers)
   formatted = formatted.replace(/\n\s*(\d+\.)\s*/g, '\n$1 ')
-  
-  // Ensure proper spacing around headers (only if they start with #)
   formatted = formatted.replace(/\n\s*(#{1,6})\s*/g, '\n$1 ')
-  
-  // Ensure proper spacing around code blocks (only if they have ```)
   formatted = formatted.replace(/```/g, '\n```')
-  
-  // Ensure proper spacing around blockquotes (only if they start with >)
   formatted = formatted.replace(/\n\s*>\s*/g, '\n> ')
-  
-  // Clean up multiple consecutive newlines
   formatted = formatted.replace(/\n{3,}/g, '\n\n')
-  
-  // Only add paragraph breaks for actual sentence endings, not mid-sentence
   formatted = formatted.replace(/([.!?])\s+([A-Z][a-z])/g, '$1\n\n$2')
-  
-  // Clean up the final result
-  formatted = formatted.trim()
-  
-  return formatted
+  return formatted.trim()
 }
 
 function buildSystemPrompt(context: ChatContext): string {
@@ -136,7 +236,7 @@ function buildSystemPrompt(context: ChatContext): string {
     expert: `You are a senior developer discussing this codebase with a fellow expert. Provide deep technical insights, architectural analysis, and advanced implementation details.`
   }
 
-  return `You are CodeMentor, an AI assistant that helps developers understand GitHub repositories. 
+  return `You are CodeMentor, an AI assistant that helps developers understand GitHub repositories.
 
 ${skillLevelInstructions[context.skillLevel]}
 
@@ -159,23 +259,13 @@ CRITICAL RESPONSE RULES:
    - Use > blockquotes ONLY for important warnings or notes
    - Use headers (##, ###) ONLY for major section breaks
    - Keep regular explanatory text as normal paragraphs
-   - Don't over-format - most text should remain plain
-
-ASSERTIVE REWRITE EXAMPLES:
-- Hedged: "It seems the API calls this function to fetch data."
-  Assertive: "The API calls this function to fetch data."
-- Hedged: "This might be the entry point."
-  Assertive: "This is the entry point."
-- Hedged: "The state probably resets here."
-  Assertive: "The state resets here."
+   - Don't over-format — most text should remain plain
 
 Available Context:
 - Selected file: ${context.selectedFile || 'None'}
 - Repository insights: ${context.repoInsights ? 'Available' : 'Not available'}
 - Relevant files: ${context.relevantFiles?.length || 0} files found
 - Conversation history: ${context.conversationHistory?.length || 0} previous messages
-13. For "where is X" questions, provide specific file locations
-14. Always ground your answers in the actual code provided
 
 Remember: You're helping someone understand real code, so be accurate and practical. Reference specific files when making claims about the codebase.`
 }
@@ -183,25 +273,13 @@ Remember: You're helping someone understand real code, so be accurate and practi
 function buildUserPrompt(question: string, context: ChatContext): string {
   let prompt = `User Question: ${question}\n\n`
 
-  // Handle selected file content
   if (context.selectedFile && context.fileContent) {
     prompt += `Currently viewing file: ${context.selectedFile}\n`
-    // Send full content for selected file
     prompt += `File content:\n\`\`\`\n${context.fileContent}\n\`\`\`\n\n`
   }
 
-  // Handle retrieved files for context
   if (context.relevantFiles && context.relevantFiles.length > 0) {
-    console.log(`Adding ${context.relevantFiles.length} files to prompt`)
-    context.relevantFiles.forEach(f => {
-      console.log(`  - ${f.path}: ${f.content?.length || 0} chars`)
-      if (!f.content || f.content.length === 0) {
-        console.log(`File ${f.path} has no content`)
-      }
-    })
-    
     prompt += `Relevant files from the repository:\n\n`
-    
     context.relevantFiles.forEach((file, index) => {
       prompt += `${index + 1}. File: ${file.path}\n`
       if (file.content && file.content.length > 0) {
@@ -210,25 +288,16 @@ function buildUserPrompt(question: string, context: ChatContext): string {
         prompt += `Content: [No content available]\n\n`
       }
     })
-    
     prompt += `Use these files to provide accurate, context-aware answers. Reference specific files when relevant.\n\n`
   }
 
-  // Add repository insights if available
   if (context.repoInsights && (context.repoInsights.summary || context.repoInsights.quickstart || context.repoInsights.contributionGuide)) {
     prompt += `Repository insights (for grounding):\n\n`
-    if (context.repoInsights.summary) {
-      prompt += `Summary:\n${context.repoInsights.summary}\n\n`
-    }
-    if (context.repoInsights.quickstart) {
-      prompt += `Quickstart:\n${context.repoInsights.quickstart}\n\n`
-    }
-    if (context.repoInsights.contributionGuide) {
-      prompt += `Contribution Guide:\n${context.repoInsights.contributionGuide}\n\n`
-    }
+    if (context.repoInsights.summary) prompt += `Summary:\n${context.repoInsights.summary}\n\n`
+    if (context.repoInsights.quickstart) prompt += `Quickstart:\n${context.repoInsights.quickstart}\n\n`
+    if (context.repoInsights.contributionGuide) prompt += `Contribution Guide:\n${context.repoInsights.contributionGuide}\n\n`
   }
 
-  // Add conversation history
   if (context.conversationHistory && context.conversationHistory.length > 0) {
     prompt += `Previous conversation:\n`
     context.conversationHistory.slice(-3).forEach(msg => {
@@ -240,7 +309,9 @@ function buildUserPrompt(question: string, context: ChatContext): string {
   return prompt
 }
 
-// Enhanced search and analysis functions
+// ---------------------------------------------------------------------------
+// Other exported functions (analyzeRepositoryStructure, explainFile, etc.)
+// ---------------------------------------------------------------------------
 export async function analyzeRepositoryStructure(
   repoName: string,
   files: Array<{ path: string; type: string; content?: string }>
@@ -249,7 +320,7 @@ export async function analyzeRepositoryStructure(
     const fileList = files
       .filter(f => f.type === 'file')
       .map(f => f.path)
-      .slice(0, 50) // Limit to first 50 files for analysis
+      .slice(0, 50)
 
     const prompt = `Analyze this repository structure and provide a high-level overview:
 
@@ -265,19 +336,9 @@ Please provide:
 
 Keep it concise and beginner-friendly.`
 
-    // Use secondary key for structure analysis if available
-    const client = genAISearch || genAI
-    const response = await withGeminiRetry(() => 
-      client.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-      })
-    )
-
-    if (!response) return "Unable to analyze repository structure at this time."
-    return response.text
-  } catch (error) {
-    console.error('Error analyzing repository structure:', error)
+    return await generateWithFallback(prompt)
+  } catch (error: any) {
+    console.error('[Gemini] analyzeRepositoryStructure failed:', error?.message || error)
     return 'Unable to analyze repository structure at this time.'
   }
 }
@@ -307,17 +368,9 @@ Please provide:
 
 Keep the explanation clear and practical.`
 
-    const response = await withGeminiRetry(() => 
-      genAI.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-      })
-    )
-
-    if (!response) return "Unable to explain this file at this time."
-    return response.text
-  } catch (error) {
-    console.error('Error explaining file:', error)
+    return await generateWithFallback(prompt)
+  } catch (error: any) {
+    console.error('[Gemini] explainFile failed:', error?.message || error)
     return 'Unable to explain this file at this time.'
   }
 }
@@ -329,8 +382,8 @@ export async function suggestContributions(
 ): Promise<string> {
   try {
     const issueList = issues
-      .filter(issue => issue.labels.some(label => 
-        label.toLowerCase().includes('good first issue') || 
+      .filter(issue => issue.labels.some(label =>
+        label.toLowerCase().includes('good first issue') ||
         label.toLowerCase().includes('beginner') ||
         label.toLowerCase().includes('help wanted')
       ))
@@ -353,22 +406,13 @@ Please provide:
 
 Make it encouraging and actionable for beginners.`
 
-    const response = await withGeminiRetry(() => 
-      genAI.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-      })
-    )
-
-    if (!response) return "Unable to suggest contributions at this time."
-    return response.text
-  } catch (error) {
-    console.error('Error suggesting contributions:', error)
+    return await generateWithFallback(prompt)
+  } catch (error: any) {
+    console.error('[Gemini] suggestContributions failed:', error?.message || error)
     return 'Unable to suggest contributions at this time.'
   }
 }
 
-// Generate insights from README if available, otherwise fallback to AI analysis
 export async function generateInsightsFromReadme(
   repoName: string,
   readmeContent: string,
@@ -378,8 +422,7 @@ export async function generateInsightsFromReadme(
   quickstart: string
   contributionGuide: string
 }> {
-  try {
-    const prompt = `Extract key information from this README to create repository insights.
+  const prompt = `Extract key information from this README to create repository insights.
 
 Repository: ${repoName}
 README Content:
@@ -411,41 +454,25 @@ SUMMARY: [your summary here]
 QUICKSTART: [your quickstart here]
 CONTRIBUTION_GUIDE: [your contribution guide here]`
 
-    const response = await withGeminiRetry(() => 
-      genAI.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-      })
-    )
+  const text = await generateWithFallback(prompt)
+  const summary = extractSection(text, 'SUMMARY')
+  const quickstart = extractSection(text, 'QUICKSTART')
+  const contributionGuide = extractSection(text, 'CONTRIBUTION_GUIDE')
 
-    if (!response) {
-      throw new Error('No response from AI')
-    }
-
-    const text = response.text
-    const summary = extractSection(text, 'SUMMARY')
-    const quickstart = extractSection(text, 'QUICKSTART')
-    const contributionGuide = extractSection(text, 'CONTRIBUTION_GUIDE')
-
-    return {
-      summary: summary || 'Repository summary unavailable.',
-      quickstart: quickstart || 'Quickstart guide unavailable.',
-      contributionGuide: contributionGuide || 'Contribution guide unavailable.'
-    }
-  } catch (error) {
-    console.error('Error generating insights from README:', error)
-    throw error
+  return {
+    summary: summary || 'Repository summary unavailable.',
+    quickstart: quickstart || 'Quickstart guide unavailable.',
+    contributionGuide: contributionGuide || 'Contribution guide unavailable.'
   }
 }
 
-// Helper to extract section from AI response
 function extractSection(text: string, sectionName: string): string {
   const regex = new RegExp(`${sectionName}:\\s*([\\s\\S]*?)(?=\\n[A-Z_]+:|$)`, 'i')
   const match = text.match(regex)
   return match ? match[1].trim() : ''
 }
 
-// Post-processor to enforce assertive tone while preserving code blocks and inline code
+// Post-processor to enforce assertive tone while preserving code blocks
 export function enforceAssertiveTone(text: string): string {
   try {
     const codeFence = /```[\s\S]*?```/g
@@ -470,9 +497,7 @@ export function enforceAssertiveTone(text: string): string {
       const inlineParts = segment.split(inlineFence)
       const replaced = inlineParts.map(p => {
         let s = p
-        for (const [re, rep] of hedges) {
-          s = s.replace(re, rep)
-        }
+        for (const [re, rep] of hedges) s = s.replace(re, rep)
         return s.replace(/\s{2,}/g, ' ')
       })
       let out = ''

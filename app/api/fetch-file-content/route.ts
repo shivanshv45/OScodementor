@@ -1,7 +1,7 @@
 // API route for fetching file content from GitHub
 import { Octokit } from '@octokit/rest'
 import { ApiError } from '@/lib/types'
-import { indexFile } from '@/lib/elasticsearch'
+import { indexFile } from '@/lib/search-adapter'
 import { parseGitHubUrl } from '@/lib/github'
 import { getRepositoryByUrl } from '@/lib/database'
 
@@ -13,7 +13,7 @@ const octokit = new Octokit({
 
 export async function POST(request: Request) {
   console.log('🔍 API Route: fetch-file-content called')
-  
+
   try {
     const { repoUrl, filePath, branch } = await request.json()
 

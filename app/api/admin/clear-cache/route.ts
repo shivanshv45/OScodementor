@@ -1,13 +1,13 @@
 // Admin API for clearing repository cache
 import { clearRepositoryCache } from '@/lib/database'
-import { deleteRepositoryFromIndex } from '@/lib/elasticsearch'
+import { deleteRepositoryFromIndex } from '@/lib/search-adapter'
 
 export async function POST(request: Request) {
   console.log('🔍 API Route: admin/clear-cache called')
-  
+
   try {
     const { repoId } = await request.json()
-    
+
     if (!repoId) {
       return Response.json(
         { error: 'Repository ID is required' },
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
 
     // Clear from database
     await clearRepositoryCache(repoId)
-    
+
     // Clear from Elasticsearch
     try {
       await deleteRepositoryFromIndex(repoId)
@@ -25,9 +25,9 @@ export async function POST(request: Request) {
       console.error('Error clearing from Elasticsearch:', elasticError)
       // Don't fail the request if Elasticsearch fails
     }
-    
+
     console.log(`✅ Cleared cache for repository: ${repoId}`)
-    
+
     return Response.json({
       success: true,
       message: 'Repository cache cleared successfully'

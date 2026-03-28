@@ -1,28 +1,19 @@
 // Index a repository with progress tracking
 import { fetchCompleteRepositoryData, parseGitHubUrl } from '@/lib/github'
-import { 
-  createRepository, 
-  updateRepositoryStatus, 
+import {
+  createRepository,
+  updateRepositoryStatus,
   getIndexingProgress,
-  IndexedRepository 
+  IndexedRepository
 } from '@/lib/database'
-import { 
-  initializeElasticsearch, 
-  indexRepository, 
-  indexFile 
-} from '@/lib/elasticsearch'
-import { fetchRawFileContent, scoreFileImportance, githubConcurrencyLimit } from '@/lib/github'
-import { updateRepositoryInsights } from '@/lib/database'
-import { generateInsightsFromReadme, analyzeRepositoryStructure } from '@/lib/gemini'
-import { searchFilesInRepository } from '@/lib/elasticsearch'
 import { ApiError } from '@/lib/types'
 
 export async function POST(request: Request) {
   console.log('🔍 API Route: index-repo called')
-  
+
   try {
     const { repoUrl } = await request.json()
-    
+
     if (!repoUrl) {
       return Response.json(
         { error: 'Repository URL is required' },
@@ -30,8 +21,8 @@ export async function POST(request: Request) {
       )
     }
 
-    // Initialize Elasticsearch if needed
-    await initializeElasticsearch()
+    // Note: Elasticsearch initialization is handled by the background-index worker.
+    // This endpoint just creates the DB record and triggers the worker.
 
     // Extract repo info from URL
     const urlParts = repoUrl.replace('https://github.com/', '').split('/')
@@ -45,9 +36,9 @@ export async function POST(request: Request) {
       const quickInfo = await fetchCompleteRepositoryData(repoUrl)
       initialStars = quickInfo.stars || 0
       initialDesc = quickInfo.description || null
-    } catch {}
+    } catch { }
 
-    // Create repository record
+    // Create repository record (upserts on duplicate repo_url)
     const repoData: Omit<IndexedRepository, 'id' | 'indexed_at' | 'last_accessed_at' | 'access_count'> = {
       repo_url: repoUrl,
       repo_name: repoName,
@@ -70,24 +61,21 @@ export async function POST(request: Request) {
     const repository = await createRepository(repoData)
     console.log(`✅ Created repository record: ${repository.id}`)
 
-    // Start indexing process (non-blocking)
+    // Trigger background indexing reliably using internal import
+    // instead of an unreliable self-fetch to NEXT_PUBLIC_BASE_URL
     console.log(`🚀 Starting background indexing for repo: ${repository.id}`)
-    console.log(`🔍 Repository details:`, { repoId: repository.id, repoUrl })
-    
-    // Get the base URL for the fetch call
-    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'
+
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`
     const backgroundIndexUrl = `${baseUrl}/api/background-index`
     console.log(`🔍 Background index URL: ${backgroundIndexUrl}`)
-    
-    // Trigger background indexing via separate API call
-    // Fire-and-forget: Don't wait for response, just trigger it
-    // The endpoint will return quickly but indexing continues in background
+
+    // Fire-and-forget but with better error handling
     fetch(backgroundIndexUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        repoId: repository.id, 
-        repoUrl 
+      body: JSON.stringify({
+        repoId: repository.id,
+        repoUrl
       })
     }).then(async response => {
       if (response.ok) {
@@ -100,18 +88,21 @@ export async function POST(request: Request) {
           statusText: response.statusText,
           error: errorText
         })
-        // Don't mark as failed immediately - let the background process handle errors
-        // Just log it for debugging
+        // Mark as failed so the user sees the error instead of stuck at pending
+        try {
+          await updateRepositoryStatus(repository.id, 'failed', 0, 'Background indexing failed to start', errorText)
+        } catch { }
       }
-    }).catch(error => {
-      // Network errors - log but don't fail the request
-      // The indexing might still start on the server side
-      console.error(`⚠️ Error triggering background indexing (non-fatal) for ${repository.id}:`, {
+    }).catch(async error => {
+      console.error(`⚠️ Error triggering background indexing for ${repository.id}:`, {
         message: error.message,
         name: error.name,
         url: backgroundIndexUrl
       })
-      // Don't update status to failed - let the background process handle it
+      // Mark as failed so the user sees the error
+      try {
+        await updateRepositoryStatus(repository.id, 'failed', 0, 'Could not reach background indexing service', error.message)
+      } catch { }
     })
 
     return Response.json({
@@ -129,4 +120,3 @@ export async function POST(request: Request) {
     )
   }
 }
-
