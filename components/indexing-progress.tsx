@@ -43,14 +43,31 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
     if (!repoId) return
 
     let stopped = false
+    let retriedOnce = false
+
+    const triggerBackgroundIndex = async () => {
+      if (retriedOnce) return
+      retriedOnce = true
+      console.log('🔄 Stall detected, re-triggering background indexing...')
+      const repoUrl = typeof window !== 'undefined' ? sessionStorage.getItem('currentRepoUrl') : null
+      if (!repoUrl) return
+      try {
+        fetch('/api/background-index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoId, repoUrl })
+        }).catch(() => {})
+      } catch {}
+    }
 
     const checkStatus = async () => {
       if (stopped) return
       try {
+        const repoUrl = typeof window !== 'undefined' ? sessionStorage.getItem('currentRepoUrl') : null
         const response = await fetch('/api/index-status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ repoId })
+          body: JSON.stringify({ repoId, repoUrl })
         })
 
         if (!response.ok) {
@@ -69,7 +86,10 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
             errorMessage: data.errorMessage
           })
 
-          // Handle completion — stop polling
+          if (data.stalled && !retriedOnce) {
+            triggerBackgroundIndex()
+          }
+
           if (data.status === 'completed') {
             stopped = true
             setTimeout(() => {
@@ -78,7 +98,6 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
             }, 3000)
           }
 
-          // Handle error — stop polling
           if (data.status === 'failed') {
             stopped = true
             onError?.(data.errorMessage || 'Indexing failed')
@@ -98,7 +117,7 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
 
     checkStatus()
 
-    const interval = setInterval(checkStatus, 1500)
+    const interval = setInterval(checkStatus, 2500)
 
     return () => {
       stopped = true
