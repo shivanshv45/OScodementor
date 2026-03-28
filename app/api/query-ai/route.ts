@@ -5,6 +5,8 @@ import { searchFilesInRepository, getFileContent, indexFile } from '@/lib/search
 import { getRepositoryByUrl, getRepositoryInsights } from '@/lib/database'
 import { fetchRawFileContent } from '@/lib/github'
 
+export const maxDuration = 60
+
 export async function POST(request: Request) {
   console.log('API Route: query-ai called')
 

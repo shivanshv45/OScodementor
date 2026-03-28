@@ -4,6 +4,8 @@ import { getRepositoryByUrl, updateRepositoryAccess } from '@/lib/database'
 import { searchFilesInRepository } from '@/lib/search-adapter'
 import { ApiError } from '@/lib/types'
 
+export const maxDuration = 60
+
 export async function POST(request: Request) {
   console.log('🔍 API Route: fetch-repo called')
 
@@ -85,6 +87,11 @@ export async function POST(request: Request) {
         try {
           const indexedFiles = await searchFilesInRepository(cachedRepo.id, '*')
 
+          if (!indexedFiles || indexedFiles.length === 0) {
+            console.log('⚠️ Cache reports completed but 0 files found in search engine, falling back to GitHub API')
+            // Fall through to GitHub API below
+          } else {
+
           // Rebuild hierarchical tree from flat list
           const buildTree = (paths: Array<{ path: string; type: string; content?: string }>) => {
             const root: any[] = []
@@ -145,7 +152,6 @@ export async function POST(request: Request) {
           }))
           const tree = buildTree(flat)
 
-          // Generate a super short description (not the exact GitHub description)
           const generateShortDescription = (
             name: string,
             original: string | null,
@@ -176,8 +182,9 @@ export async function POST(request: Request) {
           })
 
           return Response.json(repoData)
+          }
         } catch (elasticError) {
-          console.error('❌ Error loading from Elasticsearch, falling back to GitHub API:', elasticError)
+          console.error('❌ Error loading from search engine, falling back to GitHub API:', elasticError)
           // Continue to GitHub API fallback
         }
       } else if (cachedRepo.index_status === 'indexing' || cachedRepo.index_status === 'pending') {

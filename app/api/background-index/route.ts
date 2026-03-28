@@ -13,6 +13,8 @@ import { fetchRawFileContent, scoreFileImportance, githubConcurrencyLimit } from
 import { updateRepositoryInsights } from '@/lib/database'
 import { generateInsightsFromReadme, analyzeRepositoryStructure } from '@/lib/gemini'
 
+export const maxDuration = 60
+
 export async function POST(request: Request) {
   console.log('🔄 Background indexing worker started')
   console.log('🔍 Request received at:', new Date().toISOString())
