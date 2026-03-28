@@ -107,6 +107,16 @@ export default function RepoConsole({ repoUrl, onBack }: RepoConsoleProps) {
         setIsIndexing(true)
         setIndexingRepoId(data.repoId)
         console.log('✅ Indexing started:', data.repoId)
+
+        fetch('/api/background-index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repoId: data.repoId, repoUrl })
+        }).then(res => {
+          console.log('✅ Background indexing response:', res.status)
+        }).catch(err => {
+          console.warn('⚠️ Background indexing request error (may still be running):', err.message)
+        })
       }
     } catch (error) {
       console.error('❌ Failed to start indexing:', error)
