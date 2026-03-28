@@ -16,6 +16,7 @@ import {
 import { fetchRawFileContent, githubConcurrencyLimit } from '@/lib/github'
 import { updateRepositoryInsights } from '@/lib/database'
 import { generateInsightsFromReadme, analyzeRepositoryStructure } from '@/lib/gemini'
+import { after } from 'next/server'
 
 export const maxDuration = 60
 
@@ -71,11 +72,14 @@ export async function POST(request: Request) {
 
     await updateRepositoryStatus(repoId, 'indexing', 5, 'Starting indexing process...')
 
-    indexRepositoryInline(repoId, repoUrl).catch(async (error) => {
-      console.error(`❌ Inline indexing failed for ${repoId}:`, error)
-      try {
-        await updateRepositoryStatus(repoId!, 'failed', 0, 'Indexing failed', error.message || 'Unknown error')
-      } catch { }
+    // Use Next.js 15 after() to ensure Vercel keeps the lambda alive after the response is sent
+    after(() => {
+      indexRepositoryInline(repository.id, repoUrl).catch(async (error) => {
+        console.error(`❌ Inline indexing failed for ${repository.id}:`, error)
+        try {
+          await updateRepositoryStatus(repository.id, 'failed', 0, 'Indexing failed', error.message || 'Unknown error')
+        } catch { }
+      })
     })
 
     return Response.json({
