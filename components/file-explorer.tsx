@@ -382,7 +382,7 @@ export default function FileExplorer({ files, onFileSelect, selectedFile, onExpl
                 <div>
                   {searchQuery && (
                     <div className="console-text text-xs text-muted-foreground mb-2 px-2">
-                      > Found {tree.filter(node => shouldShowNode(node)).length} items
+                      {"> Found "} {tree.filter(node => shouldShowNode(node)).length} items
                     </div>
                   )}
                   {tree.map((node) => <TreeNode key={node.path} node={node} />)}

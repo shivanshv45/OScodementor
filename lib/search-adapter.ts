@@ -56,22 +56,6 @@ export async function initializeSearchEngine(): Promise<void> {
 
     console.log('🔍 Search Adapter: Detecting available search engines...')
 
-    const es = await getElasticsearchEngine()
-    if (es) {
-        try {
-            const connected = await es.testConnection()
-            if (connected) {
-                await es.initialize()
-                activeEngine = es
-                initialized = true
-                console.log('✅ Search Adapter: Using Elasticsearch (primary)')
-                return
-            }
-        } catch (err: any) {
-            console.warn('⚠️ Elasticsearch failed to initialize:', err.message)
-        }
-    }
-
     const ts = await getTypesenseEngine()
     if (ts) {
         try {
@@ -80,11 +64,27 @@ export async function initializeSearchEngine(): Promise<void> {
                 await ts.initialize()
                 activeEngine = ts
                 initialized = true
-                console.log('✅ Search Adapter: Using Typesense (fallback)')
+                console.log('✅ Search Adapter: Using Typesense (primary)')
                 return
             }
         } catch (err: any) {
             console.warn('⚠️ Typesense failed to initialize:', err.message)
+        }
+    }
+
+    const es = await getElasticsearchEngine()
+    if (es) {
+        try {
+            const connected = await es.testConnection()
+            if (connected) {
+                await es.initialize()
+                activeEngine = es
+                initialized = true
+                console.log('✅ Search Adapter: Using Elasticsearch (fallback)')
+                return
+            }
+        } catch (err: any) {
+            console.warn('⚠️ Elasticsearch failed to initialize:', err.message)
         }
     }
 
@@ -159,13 +159,11 @@ export async function testSearchConnection(): Promise<boolean> {
 }
 
 export async function indexRepository(repoData: Partial<SearchEngineRepository>): Promise<void> {
-    const engine = await getEngine()
-    return engine.indexRepository(repoData)
+    return withFallback(engine => engine.indexRepository(repoData))
 }
 
 export async function indexFile(fileData: Partial<SearchEngineFile>): Promise<string> {
-    const engine = await getEngine()
-    return engine.indexFile(fileData)
+    return withFallback(engine => engine.indexFile(fileData))
 }
 
 export async function searchRepositories(

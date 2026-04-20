@@ -257,7 +257,7 @@ async function indexRepositoryAsync(repoId: string, repoUrl: string) {
           await indexFile(fileData)
           indexedFilesCount++
 
-          if (indexedFilesCount % 2 === 0 || indexedFilesCount === totalFiles) {
+          if (indexedFilesCount % 5 === 0 || indexedFilesCount === totalFiles) {
             const progress = Math.min(40 + Math.floor((indexedFilesCount / totalFiles) * 50), 90)
             await updateRepositoryStatus(
               repoId,
@@ -283,7 +283,7 @@ async function indexRepositoryAsync(repoId: string, repoUrl: string) {
 
     await updateRepositoryStatus(repoId, 'indexing', 85, 'Fetched file contents from GitHub')
 
-    // Step 10: Generate insights
+    // Step 10: Generate insights (NON-FATAL — indexing completes even if Gemini is down)
     await updateRepositoryStatus(repoId, 'indexing', 92, 'Generating repository insights...')
 
     try {
@@ -305,19 +305,27 @@ async function indexRepositoryAsync(repoId: string, repoUrl: string) {
             })
             console.log('✅ Generated insights from README')
           } else {
-            throw new Error('Could not fetch README content')
+            console.warn('⚠️ Could not fetch README content — skipping insights')
           }
         } catch (readmeError: any) {
-          console.warn('⚠️ README-based insights failed:', readmeError.message)
-          const structureSummary = await analyzeRepositoryStructure(repoData.name, fileList)
-          await updateRepositoryInsights(repoId, { repo_summary: structureSummary || null })
+          console.warn('⚠️ README-based insights failed (non-fatal):', readmeError.message)
+          try {
+            const structureSummary = await analyzeRepositoryStructure(repoData.name, fileList)
+            await updateRepositoryInsights(repoId, { repo_summary: structureSummary || null })
+          } catch (structErr: any) {
+            console.warn('⚠️ Structure analysis also failed (non-fatal):', structErr.message)
+          }
         }
       } else {
-        const structureSummary = await analyzeRepositoryStructure(repoData.name, fileList)
-        await updateRepositoryInsights(repoId, { repo_summary: structureSummary || null })
+        try {
+          const structureSummary = await analyzeRepositoryStructure(repoData.name, fileList)
+          await updateRepositoryInsights(repoId, { repo_summary: structureSummary || null })
+        } catch (structErr: any) {
+          console.warn('⚠️ Structure analysis failed (non-fatal):', structErr.message)
+        }
       }
     } catch (insightsError: any) {
-      console.warn('⚠️ Failed to generate insights:', insightsError.message)
+      console.warn('⚠️ Failed to generate insights (non-fatal, indexing continues):', insightsError.message)
     }
 
     // Step 11: Verify

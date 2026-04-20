@@ -77,13 +77,19 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
         const data = await response.json()
 
         if (data.found) {
-          setStatus({
-            status: data.status,
-            progress: data.progress,
-            currentStep: data.currentStep,
-            totalFiles: data.totalFiles,
-            indexedFiles: data.indexedFiles,
-            errorMessage: data.errorMessage
+          // Only update if progress moves FORWARD — prevents flickering
+          setStatus(prev => {
+            const newProgress = Math.max(prev.progress, data.progress || 0)
+            const newIndexed = Math.max(prev.indexedFiles, data.indexedFiles || 0)
+            const newTotal = Math.max(prev.totalFiles, data.totalFiles || 0)
+            return {
+              status: data.status,
+              progress: newProgress,
+              currentStep: data.currentStep || prev.currentStep,
+              totalFiles: newTotal,
+              indexedFiles: newIndexed,
+              errorMessage: data.errorMessage
+            }
           })
 
           if (data.stalled && !retriedOnce) {
@@ -117,7 +123,7 @@ export default function IndexingProgress({ repoId, onComplete, onError }: Indexi
 
     checkStatus()
 
-    const interval = setInterval(checkStatus, 2500)
+    const interval = setInterval(checkStatus, 4000)
 
     return () => {
       stopped = true

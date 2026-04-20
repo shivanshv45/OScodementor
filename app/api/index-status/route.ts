@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     const isStalled = progress.status === 'indexing'
       && progress.progress <= 10
       && progress.started_at
-      && (Date.now() - new Date(progress.started_at).getTime() > 30000)
+      && (Date.now() - new Date(progress.started_at).getTime() > 90000)
 
     return Response.json({
       found: true,

@@ -78,10 +78,19 @@ class GeminiKeyManager {
 const keyManager = new GeminiKeyManager()
 
 // ---------------------------------------------------------------------------
-// Core generate helper — tries multiple models with proper fallback for quota/429 errors
+// Core generate helper — tries multiple models with proper fallback for quota/429/503 errors
+// Active models (April 2026): Heavy/Latest models fallback to sturdy 2.5 series.
+// NOTE: gemini-2.0-flash is DEPRECATED by Google and returns quota 0.
 // ---------------------------------------------------------------------------
-async function generateWithFallback(prompt: string): Promise<string> {
-  const models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite']
+async function generateWithFallback(prompt: string, customModels?: readonly string[]): Promise<string> {
+  const models = customModels || [
+    'gemini-3.1-pro',
+    'gemini-3-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite'
+  ]
 
   return keyManager.executeWithRetry(async (apiKey) => {
     const client = new GoogleGenAI({ apiKey })
@@ -99,34 +108,41 @@ async function generateWithFallback(prompt: string): Promise<string> {
       } catch (err: any) {
         const msg = String(err?.message || err)
         const status = err?.status || err?.code
-        // If model not found, not supported, OR quota exhausted — try next model
+        // If model not found, not supported, quota exhausted, OR 503 unavailable — try next model
         if (
           msg.includes('not found') ||
           msg.includes('not supported') ||
           msg.includes('404') ||
           msg.includes('INVALID_ARGUMENT') ||
           status === 429 ||
+          status === 503 ||
           msg.includes('429') ||
+          msg.includes('503') ||
+          msg.includes('UNAVAILABLE') ||
           msg.includes('RESOURCE_EXHAUSTED') ||
           msg.includes('quota') ||
-          msg.includes('rate limit')
+          msg.includes('rate limit') ||
+          msg.includes('overloaded') ||
+          msg.includes('high demand')
         ) {
-          console.warn(`[Gemini] ${model} unavailable/quota-exhausted, trying next model…`)
+          console.warn(`[Gemini] ${model} unavailable/quota-exhausted (${status || 'unknown'}), trying next model…`)
           lastErr = err
           continue
         }
         throw err
       }
     }
-    // If all models failed with quota errors on this key, signal quota exhaustion
+    // If all models failed with quota/503 errors on this key, signal quota exhaustion
     // so executeWithRetry rotates to the next key
     const lastMsg = String((lastErr as any)?.message || lastErr)
     if (
       lastMsg.includes('429') ||
+      lastMsg.includes('503') ||
+      lastMsg.includes('UNAVAILABLE') ||
       lastMsg.includes('RESOURCE_EXHAUSTED') ||
       lastMsg.includes('quota')
     ) {
-      const quotaErr = new Error(`Quota exhausted for all models: ${lastMsg}`)
+      const quotaErr = new Error(`Quota/availability exhausted for all models: ${lastMsg}`)
         ; (quotaErr as any).status = 429
       throw quotaErr
     }
@@ -202,9 +218,18 @@ export async function generateCodeResponse(
   const systemPrompt = buildSystemPrompt(context)
   const userPrompt = buildUserPrompt(question, context)
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`
+  
+  // Custom model fallback chain strictly for Chats
+  const CHAT_MODELS = [
+    'gemini-3-flash',
+    'gemini-2.5-pro',
+    'gemini-3.1-flash-lite',
+    'gemini-3.1-pro',
+    'gemini-2.5-flash-lite'
+  ]
 
   try {
-    const text = await withGeminiRetry(() => generateWithFallback(fullPrompt))
+    const text = await withGeminiRetry(() => generateWithFallback(fullPrompt, CHAT_MODELS))
     return formatResponse(text)
   } catch (error: any) {
     // Surface the real error message — never swallow it

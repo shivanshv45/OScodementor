@@ -9,8 +9,9 @@ const FILES_COLLECTION = 'codementor_files'
 
 function getClient(): Typesense.Client {
     const host = process.env.TYPESENSE_HOST || 'localhost'
-    const port = parseInt(process.env.TYPESENSE_PORT || '8108', 10)
-    const protocol = process.env.TYPESENSE_PROTOCOL || 'http'
+    const protocol = process.env.TYPESENSE_PROTOCOL || (host.includes('typesense.net') ? 'https' : 'http')
+    const defaultPort = protocol === 'https' ? '443' : '8108'
+    const port = parseInt(process.env.TYPESENSE_PORT || defaultPort, 10)
     const apiKey = process.env.TYPESENSE_API_KEY || 'xyz'
 
     return new Typesense.Client({
@@ -175,7 +176,7 @@ export class TypesenseSearchEngine implements SearchEngine {
     async searchRepositories(query: string, filters: Record<string, any> = {}): Promise<SearchEngineRepository[]> {
         try {
             const filterParts: string[] = []
-            if (filters.language) filterParts.push(`repo_language:=${filters.language}`)
+            if (filters.language) filterParts.push(`repo_language:=\`${filters.language}\``)
             if (filters.is_popular !== undefined) filterParts.push(`is_popular:=${filters.is_popular}`)
 
             const result = await this.client.collections(REPO_COLLECTION).documents().search({
@@ -203,9 +204,9 @@ export class TypesenseSearchEngine implements SearchEngine {
         language?: string
     ): Promise<SearchEngineFile[]> {
         try {
-            const filterParts: string[] = [`repo_id:=${repoId}`]
-            if (fileType) filterParts.push(`file_type:=${fileType}`)
-            if (language) filterParts.push(`file_language:=${language}`)
+            const filterParts: string[] = [`repo_id:=\`${repoId}\``]
+            if (fileType) filterParts.push(`file_type:=\`${fileType}\``)
+            if (language) filterParts.push(`file_language:=\`${language}\``)
 
             const normalized = (query || '').trim()
             const searchQuery = normalized && normalized !== '*' ? normalized : '*'
@@ -236,7 +237,7 @@ export class TypesenseSearchEngine implements SearchEngine {
             const result = await this.client.collections(FILES_COLLECTION).documents().search({
                 q: '*',
                 query_by: 'file_path',
-                filter_by: `repo_id:=${repoId} && file_path_exact:=${filePath}`,
+                filter_by: `repo_id:=\`${repoId}\` && file_path_exact:=\`${filePath}\``,
                 per_page: 1,
             })
 
@@ -262,7 +263,7 @@ export class TypesenseSearchEngine implements SearchEngine {
 
             // Delete all files belonging to this repository
             await this.client.collections(FILES_COLLECTION).documents().delete({
-                filter_by: `repo_id:=${repoId}`,
+                filter_by: `repo_id:=\`${repoId}\``,
             })
 
             console.log(`✅ [Typesense] Deleted repository ${repoId}`)

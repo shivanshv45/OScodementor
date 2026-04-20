@@ -3,7 +3,16 @@ import { searchFilesInRepository } from '@/lib/search-adapter'
 import { getRepositoryByUrl } from '@/lib/database'
 import { GoogleGenAI } from '@google/genai'
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' })
+// Active models (April 2026): Heavy/Latest models fallback to sturdy 2.5 series.
+// NOTE: gemini-2.0-flash is DEPRECATED by Google and returns quota 0.
+const MODELS = [
+  'gemini-3.1-pro',
+  'gemini-3-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite'
+] as const
 
 export async function POST(request: Request) {
     try {
@@ -68,12 +77,33 @@ Rules:
 - If no issues found, return empty issues array with a positive summary
 - Maximum 15 issues`
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-        })
+        // Model fallback loop — handles 503/429 gracefully
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' })
+        let lastError: any
+        let text = ''
 
-        let text = response.text || ''
+        for (const model of MODELS) {
+            try {
+                const response = await ai.models.generateContent({
+                    model,
+                    contents: prompt,
+                })
+                text = response.text || ''
+                break // success — exit loop
+            } catch (err: any) {
+                const msg = String(err?.message || err)
+                const status = err?.status || err?.code
+                if (status === 503 || status === 429 || msg.includes('UNAVAILABLE') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('overloaded') || msg.includes('not found') || msg.includes('not supported')) {
+                    console.warn(`[Bug Radar] ${model} unavailable (${status}), trying next model…`)
+                    lastError = err
+                    continue
+                }
+                throw err
+            }
+        }
+
+        if (!text && lastError) throw lastError
+
         text = text.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()
 
         let result: any = { issues: [], summary: 'Analysis complete.' }
