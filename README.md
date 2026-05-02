@@ -2,21 +2,26 @@
 
 A powerful AI-powered code repository analyzer and mentor that helps developers understand, explore, and learn from GitHub repositories using advanced AI technology.
 
-##  Features
+## ✨ Features
 
-- **AI-Powered Code Analysis**: Get intelligent insights about any GitHub repository
-- **Repository Indexing**: Automatically index and search through repository files
-- **Interactive Chat Interface**: Ask questions about code, architecture, and implementation
-- **File Explorer**: Browse repository structure with syntax highlighting
-- **Smart Search**: Find specific code patterns, functions, or files across the repository
-- **Repository Insights**: Get summaries, quickstart guides, and contribution tips
-- **Multi-Language Support**: Works with repositories in any programming language
+- **Neural Code Web**: Stunning 3D interactive visualization of repository architecture and file relationships.
+- **Bug Radar**: AI-driven deep scanning to identify bugs, security vulnerabilities, and code smells across the entire codebase.
+- **Code Playground**: Built-in Monaco editor to instantly test, modify, and experiment with repository code snippets.
+- **Onboard Me**: Automated, tailored onboarding paths that guide you from beginner to expert in any codebase.
+- **AI-Powered Code Analysis**: Get intelligent insights about any GitHub repository using Gemini AI.
+- **Repository Indexing**: Automatically index and search through repository files (Elasticsearch/Typesense/Postgres fallback).
+- **Interactive Chat Interface**: Ask questions about code, architecture, and implementation.
+- **File Explorer**: Browse repository structure with syntax highlighting.
+- **Smart Search**: Find specific code patterns, functions, or files across the repository.
+- **Multi-Language Support**: Works with repositories in any programming language.
 
-##  Tech Stack
+## 🛠️ Tech Stack
 
-- **Frontend**: Next.js 14, React, TypeScript, Tailwind CSS
-- **Backend**: Next.js API Routes, PostgreSQL
-- **Search Engine**: Elasticsearch
+- **Frontend**: Next.js 14, React, TypeScript, Tailwind CSS, Framer Motion
+- **3D Visualization**: React Three Fiber, Three.js
+- **Code Editor**: Monaco Editor (`@monaco-editor/react`)
+- **Backend**: Next.js API Routes
+- **Search Engine**: Elasticsearch (with Typesense and PostgreSQL fallbacks)
 - **AI Integration**: Google Gemini API
 - **Database**: PostgreSQL with connection pooling
 - **Deployment**: Vercel
@@ -104,6 +109,7 @@ codementor/
 │   │   ├── background-index/ # Background indexing
 │   │   ├── index-repo/    # Repository indexing
 │   │   ├── index-status/  # Indexing status
+│   │   ├── code-playground/ # Code execution environments
 │   │   └── query-ai/      # AI query endpoint
 │   ├── admin/             # Admin dashboard
 │   └── page.tsx           # Main page
@@ -111,10 +117,18 @@ codementor/
 │   ├── ui/               # Reusable UI components
 │   ├── chat-window.tsx   # Chat interface
 │   ├── file-explorer.tsx # File browser
+│   ├── code-neural-web.tsx # 3D Repository Visualization
+│   ├── code-playground.tsx # Monaco Code Editor
+│   ├── bug-radar.tsx     # Vulnerability Scanner
+│   ├── onboard-me.tsx    # Codebase Onboarding
+│   ├── quick-buttons.tsx # Quick actions menu
 │   └── landing-page.tsx  # Landing page
 ├── lib/                  # Utility libraries
 │   ├── database.ts       # Database operations
-│   ├── elasticsearch.ts  # Search functionality
+│   ├── search-adapter.ts # Multi-engine search routing
+│   ├── elasticsearch.ts  # Elasticsearch functionality
+│   ├── typesense.ts      # Typesense functionality
+│   ├── pg-search.ts      # PostgreSQL full-text search fallback
 │   ├── github.ts         # GitHub API integration
 │   ├── gemini.ts         # AI integration
 │   └── types.ts          # TypeScript types
@@ -162,12 +176,12 @@ When you submit a GitHub repository URL:
 - "How do I contribute to this project?"
 - "What are the main dependencies?"
 
-### Quick Actions
+### Quick Actions & Tools
 
-- **Summarize**: Get a high-level overview of the repository
-- **Architecture**: Understand the project structure
-- **Contribution Guide**: Learn how to contribute
-- **Quickstart**: Get started with the project
+- **Neural Web**: Launch a beautiful 3D node-based visualization of the repository.
+- **Bug Radar**: Run an automated AI scan for logical errors and security vulnerabilities.
+- **Onboard Me**: Generate a personalized, step-by-step onboarding plan for the codebase.
+- **Playground**: Open any file in the built-in Monaco editor to safely experiment and execute snippets.
 
 ## 🚀 Deployment
 
